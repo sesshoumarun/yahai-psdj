@@ -23,30 +23,33 @@ EOT
     fi
 }
 
-# 智能环境检查：已安装的自动跳过，未安装的按需补齐
+# 智能环境检查并打印详细状态
 install_dependencies() {
-    echo "🔍 正在检查基础运行环境..."
+    echo "=========================================="
+    echo "       🔍 正在检查本地运行环境..."
+    echo "=========================================="
     
-    # 检查基础工具 (python3, qrencode, curl, jq)
-    if ! command -v python3 >/dev/null 2>&1 || ! command -v qrencode >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-        echo "📦 检测到缺失基础工具，正在安装..."
-        apt-get update -y && apt-get install -y python3 qrencode curl jq || yum install -y python3 qrencode curl jq
-    else
-        echo "✅ 基础工具已就绪，跳过安装。"
-    fi
-    
-    # 检查 Docker (中转节点需要)
+    for tool in python3 qrencode curl jq; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "📦 检测到缺失工具 [$tool]，正在自动安装..."
+            apt-get update -y && apt-get install -y "$tool" || yum install -y "$tool"
+        else
+            echo "✅ 本地环境 [ $tool ] 已就绪"
+        fi
+    done
+
     if ! command -v docker >/dev/null 2>&1; then
-        echo "🐳 正在安装 Docker..."
+        echo "🐳 检测到 Docker 未安装，正在自动部署..."
         curl -fsSL https://get.docker.com | bash
         systemctl start docker
         systemctl enable docker
     else
-        echo "✅ Docker 环境已存在，跳过安装。"
+        echo "✅ 本地环境 [ Docker ] 已就绪"
     fi
 
     mkdir -p "$CONFIG_DIR"
     enable_bbr
+    echo "=========================================="
 }
 
 pause() {
@@ -319,20 +322,24 @@ relay_select_node() {
 
 relay_create_node() {
     echo -e "\n--- 新建中转节点 ---"
-    read -p "1. 请输入节点别向前缀 (例如 马来西亚住宅): " user_alias_prefix
+    read -p "1. 请输入节点别名前缀 (例如 马来西亚住宅 / 日本 01): " user_alias_prefix
     [ -z "$user_alias_prefix" ] && user_alias_prefix="中转"
-    read -p "2. 请输入你的伪装域名/服务器IP: " NODE_DOMAIN
+    read -p "2. 请输入你的伪装域名/服务器IP (例如 us1.5898519.xyz): " NODE_DOMAIN
     [ -z "$NODE_DOMAIN" ] && NODE_DOMAIN="$(curl -sS --max-time 5 https://api.ipify.org || echo "127.0.0.1")"
 
-    echo -e "\n3. 请输入出口中转(上游)信息 (支持一键粘贴 IP:端口:账号:密码)"
+    echo -e "\n3. 请输入出口中转(上游)信息"
+    echo "👉 支持一键粘贴格式: IP:端口:账号:密码 (例如 103.116.47.189:9270:user:pass)"
     read -p "   请输入: " RAW_UP_INFO
 
     if [[ "$RAW_UP_INFO" =~ ^([^:]+):([0-9]+):([^:]+):(.+)$ ]]; then
         MY_UP_HOST="${BASH_REMATCH[1]}"; MY_UP_PORT="${BASH_REMATCH[2]}"
         MY_UP_USER="${BASH_REMATCH[3]}"; MY_UP_PASS="${BASH_REMATCH[4]}"
+        echo "-> 已识别一键格式: IP: ${MY_UP_HOST} | 端口: ${MY_UP_PORT} | 账号: ${MY_UP_USER} | 密码: ${MY_UP_PASS}"
     else
         MY_UP_HOST="$RAW_UP_INFO"
-        read -p "   端口: " MY_UP_PORT; read -p "   账号: " MY_UP_USER; read -p "   密码: " MY_UP_PASS
+        read -p "   端口: " MY_UP_PORT
+        read -p "   账号: " MY_UP_USER
+        read -p "   密码: " MY_UP_PASS
     fi
 
     while true; do
@@ -343,10 +350,11 @@ relay_create_node() {
                 if ! check_port_used "$candidate"; then XRAY_PORT=$candidate; break; fi
             done
             [ -z "$XRAY_PORT" ] && XRAY_PORT=$((RANDOM % 40001 + 20000))
+            echo "-> 自动分配可用端口: ${XRAY_PORT}"
             break
         else
             if check_port_used "$XRAY_PORT"; then
-                echo "❌ 警告：端口已被占用！"
+                echo "❌ 警告：端口 ${XRAY_PORT} 在远程防撞池或系统中已被占用！"
             else
                 break
             fi
@@ -362,6 +370,21 @@ relay_create_node() {
     NODE_KEY=$(get_node_key "$NODE_ALIAS")
     WORK_DIR="/opt/relay-${NODE_KEY}"
     mkdir -p "${WORK_DIR}"
+
+    echo -e "\n正在开始部署，请稍候..."
+    
+    # 恢复网络连通性测试与出口IP检测显示
+    echo "正在测试网络连通性..."
+    test_id="test-$(openssl rand -hex 4)"
+    echo "$test_id"
+    
+    egress_ip=""
+    country_code=""
+    test_res=$(docker run --rm --network host -e ALL_PROXY="socks5://${MY_UP_USER}:${MY_UP_PASS}@${MY_UP_HOST}:${MY_UP_PORT}" curlimages/curl:latest curl -s --max-time 6 https://ipapi.co/json 2>/dev/null || echo "")
+    if [ -n "$test_res" ]; then
+        egress_ip=$(echo "$test_res" | grep -o '"ip":[^,]*' | awk -F'"' '{print $4}')
+        country_code=$(echo "$test_res" | grep -o '"country_code":[^,]*' | awk -F'"' '{print $4}')
+    fi
 
     XRAY_IMAGE="ghcr.io/xtls/xray-core:26.3.23"
     docker pull "$XRAY_IMAGE" >/dev/null 2>&1
@@ -421,8 +444,18 @@ PY
     qrencode -o "${QR_FILE}" -s 10 "$(cat "${LINK_FILE}")" 2>/dev/null || true
     add_port_log "$XRAY_PORT"
 
-    echo "🎉 中转节点 [${NODE_ALIAS}] 部署成功！端口已同步至远程防撞池。链接："
+    echo -e "\n=========================================="
+    echo "🎉 中转节点 [${NODE_ALIAS}] 部署成功！"
+    echo "=========================================="
+    echo "对外监听端口: ${XRAY_PORT}"
+    echo "出口实际 IP: ${egress_ip:-检测超时/直连}"
+    echo "出口国家代码: ${country_code:-未知}"
+    echo "=========================================="
+    echo "【客户端一键 VLESS 链接】"
     cat "${LINK_FILE}"
+    echo ""
+    echo "二维码已保存至: ${QR_FILE}"
+    echo "=========================================="
 }
 
 relay_modify_node_config() {
