@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-# ================= 远程全局防撞池配置 =================
+# ================= 远程全局防撞池与节点大盘配置 =================
 API_URL="https://tkzyw.com/port_api.php"
 API_TOKEN="yahai2026"  # 请在这里修改你的访问密码
-# =====================================================
+# =================================================================
 
 EXPORT_DIR="/root"
 CONFIG_DIR="/usr/local/etc/xray"
@@ -23,10 +23,9 @@ EOT
     fi
 }
 
-# 智能环境检查并打印详细状态
 install_dependencies() {
     echo "=========================================="
-    echo "       🔍 正在检查本地运行环境..."
+    echo "        🔍 正在检查本地运行环境..."
     echo "=========================================="
     
     for tool in python3 qrencode curl jq; do
@@ -58,16 +57,20 @@ pause() {
 }
 
 # =========================================================
-# 远程全局防撞池核心函数 (带 Token 密码校验)
+# 云端 API 核心交互函数 (防撞池 + 节点大盘联动)
 # =========================================================
+get_server_ip() {
+    curl -sS --max-time 5 https://api.ipify.org || echo "127.0.0.1"
+}
+
 check_port_used() {
     local p="$1"
     if ss -lntp 2>/dev/null | grep -qE ":${p}[[:space:]]"; then
         return 0
     fi
     local res
-    res=$(curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=check&port=${p}" || echo "free")
-    if [[ "$res" == "used" ]]; then
+    res=$(curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=list" || echo "")
+    if echo "$res" | tr '[:space:]' '\n' | grep -q "^${p}$"; then
         return 0
     fi
     return 1
@@ -83,6 +86,37 @@ remove_port_log() {
     local p="$1"
     [ -z "$p" ] && return
     curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=remove&port=${p}" >/dev/null 2>&1 || true
+}
+
+# 节点大盘云端同步函数
+sync_node_to_cloud() {
+    local port="$1"
+    local name="$2"
+    local link="$3"
+    local server_ip
+    server_ip=$(get_server_ip)
+    [ -z "$port" ] && return
+    
+    python3 - <<PY
+import urllib.request, urllib.parse
+server = "${server_ip}"
+port = "${port}"
+name = urllib.parse.quote("""${name}""")
+link = urllib.parse.quote("""${link}""")
+url = f"${API_URL}?token=${API_TOKEN}&action=node_add&server={server}&port={port}&name={name}&link={link}"
+try:
+    urllib.request.urlopen(url, timeout=3)
+except Exception:
+    pass
+PY
+}
+
+remove_node_from_cloud() {
+    local port="$1"
+    local server_ip
+    server_ip=$(get_server_ip)
+    [ -z "$port" ] && return
+    curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=node_remove&server=${server_ip}&port=${port}" >/dev/null 2>&1 || true
 }
 
 manual_add_port() {
@@ -107,14 +141,13 @@ manual_add_port() {
 
 view_port_pool() {
     echo -e "\n=========================================="
-    echo "         🛡️ 远程全局防撞端口池记录"
+    echo "        🛡️ 远程全局防撞端口池记录"
     echo "=========================================="
     local list
     list=$(curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=list" || echo "")
     if [ -z "$list" ]; then
         echo "⚠️ 当前远程防撞池为空或连接 API 失败。"
     else
-        # 将所有空格/换行打散为每行一个，严格过滤出纯数字端口并去重排序
         local clean_list
         clean_list=$(echo "$list" | tr '[:space:]' '\n' | grep -E '^[0-9]+$' | sort -n | uniq)
         local count
@@ -123,9 +156,9 @@ view_port_pool() {
         echo "📊 当前远程防撞池共占用：${count} 个端口"
         echo "------------------------------------------"
         if [ "$count" -gt 0 ]; then
-            echo "$clean_list" | awk '{print "   [端口] " $0}'
+            echo "$clean_list" | awk '{print "    [端口] " $0}'
         else
-            echo "   (暂无有效端口记录)"
+            echo "    (暂无有效端口记录)"
         fi
     fi
     echo "=========================================="
@@ -140,7 +173,7 @@ get_node_key() {
 # =========================================================
 direct_list_nodes() {
     echo -e "\n=========================================================================="
-    echo "                         📊 已搭建的直连节点列表                         "
+    echo "                        📊 已搭建的直连节点列表                          "
     echo "=========================================================================="
     shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
 
@@ -253,7 +286,8 @@ with open("'"$SPECIFIC_CONFIG"'", "w") as f: json.dump(config, f, indent=2)
     qrencode -o "$QR_FILE" "$VLESS_LINK" 2>/dev/null || true
 
     add_port_log "$port"
-    echo "✅ 直连节点部署成功！端口 ${port} 已同步至远程防撞池。链接: $VLESS_LINK"
+    sync_node_to_cloud "$port" "$remark" "$VLESS_LINK"
+    echo "✅ 直连节点部署成功！端口 ${port} 已同步至远程防撞池与云端大盘。链接: $VLESS_LINK"
 }
 
 direct_stop_node() {
@@ -279,7 +313,8 @@ direct_delete_node() {
             pkill -f "xray.*config_${SELECTED_D_PORT}.json" 2>/dev/null || true
             rm -f "$SELECTED_D_FILE" "${SELECTED_D_FILE%.txt}.png" "${CONFIG_DIR}/config_${SELECTED_D_PORT}.json"
             [ -n "$SELECTED_D_PORT" ] && remove_port_log "$SELECTED_D_PORT"
-            echo "🗑️ 直连节点已销毁，远程防撞池端口已释放！"
+            [ -n "$SELECTED_D_PORT" ] && remove_node_from_cloud "$SELECTED_D_PORT"
+            echo "🗑️ 直连节点已销毁，远程防撞池端口与云端大盘记录已同步清理！"
         fi
     fi
 }
@@ -289,7 +324,7 @@ direct_delete_node() {
 # =========================================================
 relay_list_nodes() {
     echo -e "\n=========================================================================================="
-    echo "                                  📊 已搭建的中转节点列表                                  "
+    echo "                                      📊 已搭建的中转节点列表                                      "
     echo "=========================================================================================="
     DIRS=$(ls -d /opt/relay-* 2>/dev/null || true)
     if [ -z "$DIRS" ]; then
@@ -340,7 +375,7 @@ relay_create_node() {
 
     echo -e "\n3. 请输入出口中转(上游)信息"
     echo "👉 支持一键粘贴格式: IP:端口:账号:密码 (例如 103.116.47.189:9270:user:pass)"
-    read -p "   请输入: " RAW_UP_INFO
+    read -p "    请输入: " RAW_UP_INFO
 
     if [[ "$RAW_UP_INFO" =~ ^([^:]+):([0-9]+):([^:]+):(.+)$ ]]; then
         MY_UP_HOST="${BASH_REMATCH[1]}"; MY_UP_PORT="${BASH_REMATCH[2]}"
@@ -348,9 +383,9 @@ relay_create_node() {
         echo "-> 已识别一键格式: IP: ${MY_UP_HOST} | 端口: ${MY_UP_PORT} | 账号: ${MY_UP_USER} | 密码: ${MY_UP_PASS}"
     else
         MY_UP_HOST="$RAW_UP_INFO"
-        read -p "   端口: " MY_UP_PORT
-        read -p "   账号: " MY_UP_USER
-        read -p "   密码: " MY_UP_PASS
+        read -p "    端口: " MY_UP_PORT
+        read -p "    账号: " MY_UP_USER
+        read -p "    密码: " MY_UP_PASS
     fi
 
     while true; do
@@ -384,11 +419,7 @@ relay_create_node() {
 
     echo -e "\n正在开始部署，请稍候..."
     
-    # 恢复网络连通性测试与出口IP检测显示
     echo "正在测试网络连通性..."
-    test_id="test-$(openssl rand -hex 4)"
-    echo "$test_id"
-    
     egress_ip=""
     country_code=""
     test_res=$(docker run --rm --network host -e ALL_PROXY="socks5://${MY_UP_USER}:${MY_UP_PASS}@${MY_UP_HOST}:${MY_UP_PORT}" curlimages/curl:latest curl -s --max-time 6 https://ipapi.co/json 2>/dev/null || echo "")
@@ -453,7 +484,9 @@ link = f"vless://${XRAY_UUID}@${NODE_DOMAIN}:${XRAY_PORT}?{params}#{alias}"
 with open("${LINK_FILE}", "w", encoding="utf-8") as f: f.write(link + "\n")
 PY
     qrencode -o "${QR_FILE}" -s 10 "$(cat "${LINK_FILE}")" 2>/dev/null || true
+    
     add_port_log "$XRAY_PORT"
+    sync_node_to_cloud "$XRAY_PORT" "$NODE_ALIAS" "$(cat "${LINK_FILE}")"
 
     echo -e "\n=========================================="
     echo "🎉 中转节点 [${NODE_ALIAS}] 部署成功！"
@@ -508,15 +541,44 @@ relay_modify_node_config() {
 
         if [ "$NEED_UPDATE" -eq 1 ]; then
             if [ "$NEW_PORT" -ne "$XRAY_PORT" ]; then
+                # 云端联动：删旧端口记录
                 remove_port_log "$XRAY_PORT"
+                remove_node_from_cloud "$XRAY_PORT"
+                
+                # 记录新端口
                 add_port_log "$NEW_PORT"
             fi
             [ -z "$DEST_DOMAIN" ] && DEST_DOMAIN="www.apple.com"
 
             sed -i "s/^XRAY_UUID=.*/XRAY_UUID=\"${NEW_UUID}\"/" "$ENV_FILE"
             sed -i "s/^XRAY_PORT=.*/XRAY_PORT=${NEW_PORT}/" "$ENV_FILE"
+            
+            # 重新生成 config.json 并重启 xray
+            cat <<EOT > "${CONF_FILE}"
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "port": ${NEW_PORT}, "protocol": "vless",
+    "settings": { "clients": [{ "id": "${NEW_UUID}" }], "decryption": "none" },
+    "streamSettings": { "network": "tcp", "security": "reality", "realitySettings": { "show": false, "dest": "${DEST_DOMAIN}:443", "xver": 0, "serverNames": ["${DEST_DOMAIN}"], "privateKey": "${XRAY_PRIVATE}", "shortIds": ["${XRAY_SHORT_ID}"] } }
+  }],
+  "outbounds": [{ "protocol": "socks", "settings": { "servers": [{ "address": "127.0.0.1", "port": ${LOCAL_SOCKS_PORT} }] } }]
+}
+EOT
             docker restart "xray-${SELECTED_R_KEY}" >/dev/null
-            echo "✅ 中转节点配置修改成功！"
+
+            # 重新生成并同步新链接到云端
+            LINK_FILE="/root/${NODE_ALIAS}-link.txt"
+            python3 - <<PY
+import urllib.parse
+params = "encryption=none&security=reality&sni=${DEST_DOMAIN}&fp=chrome&pbk=${XRAY_PUBLIC}&sid=${XRAY_SHORT_ID}&type=tcp&headerType=none"
+alias = urllib.parse.quote("${NODE_ALIAS}", safe='')
+link = f"vless://${NEW_UUID}@${NODE_DOMAIN}:${NEW_PORT}?{params}#{alias}"
+with open("${LINK_FILE}", "w", encoding="utf-8") as f: f.write(link + "\n")
+PY
+            sync_node_to_cloud "$NEW_PORT" "$NODE_ALIAS" "$(cat "${LINK_FILE}")"
+
+            echo "✅ 中转节点配置修改成功，云端大盘已自动更新！"
         fi
     fi
 }
@@ -531,7 +593,8 @@ relay_destroy_node() {
             docker rm -f "gost-${SELECTED_R_KEY}" "xray-${SELECTED_R_KEY}" 2>/dev/null || true
             rm -rf "${SELECTED_R_DIR}" "/root/${SELECTED_R_ALIAS}-link.txt" "/root/${SELECTED_R_ALIAS}-QR.png"
             [ -n "$SELECTED_R_PORT" ] && remove_port_log "$SELECTED_R_PORT"
-            echo "🗑️ 中转节点已销毁，远程防撞池端口已释放！"
+            [ -n "$SELECTED_R_PORT" ] && remove_node_from_cloud "$SELECTED_R_PORT"
+            echo "🗑️ 中转节点已彻底销毁，远程防撞池与云端节点大盘记录已同步清理！"
         fi
     fi
 }
