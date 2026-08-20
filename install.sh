@@ -83,7 +83,7 @@ pause() {
 # =========================================================
 call_api() {
     local action="$1"
-    local extra_params="$2" # 传入的附加参数，例如 "port=10000&node_type=direct"
+    local extra_params="$2"
     
     local target_url="${API_URL}?token=${API_TOKEN}&action=${action}"
     if [ -n "$extra_params" ]; then
@@ -194,6 +194,49 @@ view_port_pool() {
         fi
     fi
     echo "=========================================="
+}
+
+# =========================================================
+# 新增：查看云端节点大盘详情功能
+# =========================================================
+view_cloud_node_dashboard() {
+    echo -e "\n=========================================================================="
+    echo "                          📊 云端节点大盘详情                               "
+    echo "=========================================================================="
+    local res
+    res=$(call_api "node_list" || echo "")
+    if [ -z "$res" ]; then
+        echo "⚠️ 无法连接云端 API 或云端暂无节点大盘数据。"
+    else
+        python3 - <<PY
+import json
+data = """$res"""
+try:
+    obj = json.loads(data)
+    if isinstance(obj, dict):
+        nodes = obj.get('data', obj.get('nodes', list(obj.values()) if isinstance(list(obj.values())[0], dict) else []))
+    elif isinstance(obj, list):
+        nodes = obj
+    else:
+        nodes = []
+    
+    if not nodes:
+        print("    (云端大盘暂无节点详细记录)")
+    else:
+        print(f"{'服务器IP':<15} | {'端口':<6} | {'节点名称':<22} | {'完整链接'}")
+        print("-" * 95)
+        for node in nodes:
+            ip = node.get('server', node.get('ip', '未知'))
+            port = str(node.get('port', '未知'))
+            name = node.get('name', node.get('alias', '未知'))
+            link = node.get('link', node.get('url', '未知'))
+            print(f"{ip:<15} | {port:<6} | {name:<22} | {link}")
+except Exception as e:
+    print("返回的原始数据内容:")
+    print(data)
+PY
+    fi
+    echo "=========================================================================="
 }
 
 get_node_key() {
@@ -700,14 +743,16 @@ main_menu() {
         echo " 2. 🔄 中转节点管理 (Docker Xray + Gost)"
         echo " 3. 🛡️ 批量添加已占用端口到远程防撞池"
         echo " 4. 🛡️ 查看远程全局防撞端口池记录"
+        echo " 5. 📊 查看云端节点大盘详情"
         echo " 0. 退出脚本"
         echo "=========================================="
-        read -p "请输入选项数字 (0-4): " choice
+        read -p "请输入选项数字 (0-5): " choice
         case "$choice" in
             1) direct_menu ;;
             2) relay_menu ;;
             3) manual_add_port; pause ;;
             4) view_port_pool; pause ;;
+            5) view_cloud_node_dashboard; pause ;;
             0) echo "已退出管理面板。"; exit 0 ;;
         esac
     done
