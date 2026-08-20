@@ -23,17 +23,26 @@ EOT
     fi
 }
 
+# 智能环境检查：已安装的自动跳过，未安装的按需补齐
 install_dependencies() {
-    command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y curl || yum install -y curl; }
-    command -v jq >/dev/null 2>&1 || { apt-get install -y jq || yum install -y jq; }
-    command -v qrencode >/dev/null 2>&1 || { apt-get install -y qrencode || yum install -y qrencode; }
-    command -v python3 >/dev/null 2>&1 || { apt-get install -y python3 || yum install -y python3; }
+    echo "🔍 正在检查基础运行环境..."
     
-    # 检查并安装 Docker (中转节点需要)
+    # 检查基础工具 (python3, qrencode, curl, jq)
+    if ! command -v python3 >/dev/null 2>&1 || ! command -v qrencode >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+        echo "📦 检测到缺失基础工具，正在安装..."
+        apt-get update -y && apt-get install -y python3 qrencode curl jq || yum install -y python3 qrencode curl jq
+    else
+        echo "✅ 基础工具已就绪，跳过安装。"
+    fi
+    
+    # 检查 Docker (中转节点需要)
     if ! command -v docker >/dev/null 2>&1; then
-        echo "正在安装 Docker..."
-        curl -fsSL https://get.docker.com | bash -s docker
-        systemctl enable --now docker
+        echo "🐳 正在安装 Docker..."
+        curl -fsSL https://get.docker.com | bash
+        systemctl start docker
+        systemctl enable docker
+    else
+        echo "✅ Docker 环境已存在，跳过安装。"
     fi
 
     mkdir -p "$CONFIG_DIR"
@@ -50,11 +59,9 @@ pause() {
 # =========================================================
 check_port_used() {
     local p="$1"
-    # 1. 检查当前系统本地实际端口占用
     if ss -lntp 2>/dev/null | grep -qE ":${p}[[:space:]]"; then
         return 0
     fi
-    # 2. 检查远程 API 全局防撞池
     local res
     res=$(curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=check&port=${p}" || echo "free")
     if [[ "$res" == "used" ]]; then
@@ -115,7 +122,7 @@ get_node_key() {
 }
 
 # =========================================================
-# 模块一：直连节点管理 (来自 sesshoumaru-zl_2.sh)
+# 模块一：直连节点管理
 # =========================================================
 direct_list_nodes() {
     echo -e "\n=========================================================================="
@@ -263,9 +270,8 @@ direct_delete_node() {
     fi
 }
 
-
 # =========================================================
-# 模块二：中转节点管理 (来自 sesshoumaru-zz02_2.sh)
+# 模块二：中转节点管理
 # =========================================================
 relay_list_nodes() {
     echo -e "\n=========================================================================================="
@@ -491,7 +497,6 @@ relay_view_link() {
         [ -f "/root/${SELECTED_R_ALIAS}-link.txt" ] && cat "/root/${SELECTED_R_ALIAS}-link.txt"
     fi
 }
-
 
 # =========================================================
 # 菜单导航层
