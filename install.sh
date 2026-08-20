@@ -1,9 +1,17 @@
 #!/bin/bash
 set -e
 
-# ================= 远程全局防撞池与节点大盘配置 =================
-API_URL="https://tkzyw.com/port_api.php"
-API_TOKEN="yahai2026"  # 请在这里修改你的访问密码
+# ================= 引入本地独立配置（防 Git 泄露） =================
+CONFIG_FILE="/root/yahaidajian.sh"
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+else
+    echo "❌ 错误: 找不到本地配置文件 /root/yahaidajian.sh，请先在宝塔根目录创建它！"
+    exit 1
+fi
+
+# 检查变量是否加载成功
+[ -z "$API_URL" ] || [ -z "$API_TOKEN" ] && { echo "❌ 配置文件中 API_URL 或 API_TOKEN 为空！"; exit 1; }
 # =================================================================
 
 EXPORT_DIR="/root"
@@ -173,7 +181,7 @@ get_node_key() {
 # =========================================================
 direct_list_nodes() {
     echo -e "\n=========================================================================="
-    echo "                        📊 已搭建的直连节点列表                          "
+    echo "                          📊 已搭建的直连节点列表                          "
     echo "=========================================================================="
     shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
 
@@ -324,7 +332,7 @@ direct_delete_node() {
 # =========================================================
 relay_list_nodes() {
     echo -e "\n=========================================================================================="
-    echo "                                      📊 已搭建的中转节点列表                                      "
+    echo "                                        📊 已搭建的中转节点列表                                          "
     echo "=========================================================================================="
     DIRS=$(ls -d /opt/relay-* 2>/dev/null || true)
     if [ -z "$DIRS" ]; then
@@ -541,11 +549,8 @@ relay_modify_node_config() {
 
         if [ "$NEED_UPDATE" -eq 1 ]; then
             if [ "$NEW_PORT" -ne "$XRAY_PORT" ]; then
-                # 云端联动：删旧端口记录
                 remove_port_log "$XRAY_PORT"
                 remove_node_from_cloud "$XRAY_PORT"
-                
-                # 记录新端口
                 add_port_log "$NEW_PORT"
             fi
             [ -z "$DEST_DOMAIN" ] && DEST_DOMAIN="www.apple.com"
@@ -553,7 +558,6 @@ relay_modify_node_config() {
             sed -i "s/^XRAY_UUID=.*/XRAY_UUID=\"${NEW_UUID}\"/" "$ENV_FILE"
             sed -i "s/^XRAY_PORT=.*/XRAY_PORT=${NEW_PORT}/" "$ENV_FILE"
             
-            # 重新生成 config.json 并重启 xray
             cat <<EOT > "${CONF_FILE}"
 {
   "log": { "loglevel": "warning" },
@@ -567,7 +571,6 @@ relay_modify_node_config() {
 EOT
             docker restart "xray-${SELECTED_R_KEY}" >/dev/null
 
-            # 重新生成并同步新链接到云端
             LINK_FILE="/root/${NODE_ALIAS}-link.txt"
             python3 - <<PY
 import urllib.parse
@@ -612,7 +615,7 @@ direct_menu() {
     while true; do
         clear
         echo "=========================================="
-        echo "   🌐 直连节点管理 (VLESS + REALITY)"
+        echo "    🌐 直连节点管理 (VLESS + REALITY)"
         echo "=========================================="
         echo "1. 查看直连节点列表"
         echo "2. 新建直连节点"
@@ -637,7 +640,7 @@ relay_menu() {
     while true; do
         clear
         echo "=========================================="
-        echo "   🔄 中转节点管理 (Docker Xray + Gost)"
+        echo "    🔄 中转节点管理 (Docker Xray + Gost)"
         echo "=========================================="
         echo "1. 查看中转节点列表"
         echo "2. 新建中转节点"
