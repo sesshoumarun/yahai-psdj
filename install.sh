@@ -114,8 +114,15 @@ view_port_pool() {
     if [ -z "$list" ]; then
         echo "⚠️ 当前远程防撞池为空或连接 API 失败。"
     else
-        echo "远程已记录的占用端口如下："
-        echo "$list" | awk '{print "   [端口] " $0}'
+        # 过滤掉非纯数字的杂项（如网页注释），并精确计算占用总数
+        local clean_list
+        clean_list=$(echo "$list" | grep -E '^[0-9]+$')
+        local count
+        count=$(echo "$clean_list" | grep -c '^' || echo "0")
+        
+        echo "📊 当前远程防撞池共占用：${count} 个端口"
+        echo "------------------------------------------"
+        echo "$clean_list" | awk '{print "   [端口] " $0}'
     fi
     echo "=========================================="
 }
