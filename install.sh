@@ -12,9 +12,9 @@ else
     read -p "请输入云端 API 地址 (例如 https://yourdomain.com/api.php): " input_url
     read -p "请输入云端 API 密钥 (Token): " input_token
     if [ -z "$input_url" ] || [ -z "$input_token" ]; then
-        echo "❌ 错误: API_URL 或 API_TOKEN 不能为空！"
-        exit 1
-    }
+            echo "❌ 错误: API_URL 或 API_TOKEN 不能为空！"
+            exit 1
+        fi
     cat <<EOT > "$CONFIG_FILE"
 API_URL="$input_url"
 API_TOKEN="$input_token"
