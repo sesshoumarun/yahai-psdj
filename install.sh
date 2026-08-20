@@ -79,8 +79,20 @@ pause() {
 }
 
 # =========================================================
-# 云端 API 核心交互函数 (防撞池 + 节点大盘联动)
+# 云端 API 核心交互函数 (统一适配 GET 方式与 URL 传参)
 # =========================================================
+call_api() {
+    local action="$1"
+    local extra_params="$2" # 传入的附加参数，例如 "port=10000&node_type=direct"
+    
+    local target_url="${API_URL}?token=${API_TOKEN}&action=${action}"
+    if [ -n "$extra_params" ]; then
+        target_url="${target_url}&${extra_params}"
+    fi
+    
+    curl -sS --max-time 3 "$target_url"
+}
+
 get_server_ip() {
     curl -sS --max-time 5 https://api.ipify.org || echo "127.0.0.1"
 }
@@ -91,7 +103,7 @@ check_port_used() {
         return 0
     fi
     local res
-    res=$(curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=list" || echo "")
+    res=$(call_api "list" || echo "")
     if echo "$res" | tr '[:space:]' '\n' | grep -q "^${p}$"; then
         return 0
     fi
@@ -101,13 +113,13 @@ check_port_used() {
 add_port_log() {
     local p="$1"
     [ -z "$p" ] && return
-    curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=add&port=${p}" >/dev/null 2>&1 || true
+    call_api "add" "port=${p}" >/dev/null 2>&1 || true
 }
 
 remove_port_log() {
     local p="$1"
     [ -z "$p" ] && return
-    curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=remove&port=${p}" >/dev/null 2>&1 || true
+    call_api "remove" "port=${p}" >/dev/null 2>&1 || true
 }
 
 sync_node_to_cloud() {
@@ -118,18 +130,17 @@ sync_node_to_cloud() {
     server_ip=$(get_server_ip)
     [ -z "$port" ] && return
     
-    python3 - <<PY
-import urllib.request, urllib.parse
-server = "${server_ip}"
-port = "${port}"
-name = urllib.parse.quote("""${name}""")
-link = urllib.parse.quote("""${link}""")
-url = f"${API_URL}?token=${API_TOKEN}&action=node_add&server={server}&port={port}&name={name}&link={link}"
-try:
-    urllib.request.urlopen(url, timeout=3)
-except Exception:
-    pass
+    local encoded_params
+    encoded_params=$(python3 - <<PY
+import urllib.parse
+s = urllib.parse.quote("""${server_ip}""")
+p = urllib.parse.quote("""${port}""")
+n = urllib.parse.quote("""${name}""")
+l = urllib.parse.quote("""${link}""")
+print(f"server={s}&port={p}&name={n}&link={l}")
 PY
+)
+    call_api "node_add" "$encoded_params" >/dev/null 2>&1 || true
 }
 
 remove_node_from_cloud() {
@@ -137,7 +148,7 @@ remove_node_from_cloud() {
     local server_ip
     server_ip=$(get_server_ip)
     [ -z "$port" ] && return
-    curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=node_remove&server=${server_ip}&port=${port}" >/dev/null 2>&1 || true
+    call_api "node_remove" "server=${server_ip}&port=${port}" >/dev/null 2>&1 || true
 }
 
 manual_add_port() {
@@ -165,7 +176,7 @@ view_port_pool() {
     echo "        🛡️ 远程全局防撞端口池记录"
     echo "=========================================="
     local list
-    list=$(curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=list" || echo "")
+    list=$(call_api "list" || echo "")
     if [ -z "$list" ]; then
         echo "⚠️ 当前远程防撞池为空或连接 API 失败。"
     else
@@ -194,7 +205,7 @@ get_node_key() {
 # =========================================================
 direct_list_nodes() {
     echo -e "\n=========================================================================="
-    echo "                        📊 已搭建的直连节点列表                                  "
+    echo "                          📊 已搭建的直连节点列表                          "
     echo "=========================================================================="
     shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
 
@@ -345,7 +356,7 @@ direct_delete_node() {
 # =========================================================
 relay_list_nodes() {
     echo -e "\n=========================================================================================="
-    echo "                                     📊 已搭建的中转节点列表                                              "
+    echo "                                       📊 已搭建的中转节点列表                                    "
     echo "=========================================================================================="
     DIRS=$(ls -d /opt/relay-* 2>/dev/null || true)
     if [ -z "$DIRS" ]; then
