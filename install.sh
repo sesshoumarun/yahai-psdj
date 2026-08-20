@@ -1,13 +1,27 @@
 #!/bin/bash
 set -e
 
-# ================= 引入本地独立配置（防 Git 泄露） =================
+# ================= 引入本地独立配置（防 Git 泄露 + 自动引导） =================
 CONFIG_FILE="/root/yahaidajian.sh"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 else
-    echo "❌ 错误: 找不到本地配置文件 /root/yahaidajian.sh，请先在宝塔根目录创建它！"
-    exit 1
+    echo "=========================================="
+    echo "  ⚠️ 检测到本地未配置云端 API 参数"
+    echo "=========================================="
+    read -p "请输入云端 API 地址 (例如 https://yourdomain.com/api.php): " input_url
+    read -p "请输入云端 API 密钥 (Token): " input_token
+    if [ -z "$input_url" ] || [ -z "$input_token" ]; then
+        echo "❌ 错误: API_URL 或 API_TOKEN 不能为空！"
+        exit 1
+    }
+    cat <<EOT > "$CONFIG_FILE"
+API_URL="$input_url"
+API_TOKEN="$input_token"
+EOT
+    chmod 600 "$CONFIG_FILE"
+    echo "✅ 配置文件已自动创建并写入至 $CONFIG_FILE"
+    source "$CONFIG_FILE"
 fi
 
 # 检查变量是否加载成功
@@ -96,7 +110,6 @@ remove_port_log() {
     curl -sS --max-time 3 "${API_URL}?token=${API_TOKEN}&action=remove&port=${p}" >/dev/null 2>&1 || true
 }
 
-# 节点大盘云端同步函数
 sync_node_to_cloud() {
     local port="$1"
     local name="$2"
@@ -181,7 +194,7 @@ get_node_key() {
 # =========================================================
 direct_list_nodes() {
     echo -e "\n=========================================================================="
-    echo "                          📊 已搭建的直连节点列表                          "
+    echo "                        📊 已搭建的直连节点列表                                  "
     echo "=========================================================================="
     shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
 
@@ -332,7 +345,7 @@ direct_delete_node() {
 # =========================================================
 relay_list_nodes() {
     echo -e "\n=========================================================================================="
-    echo "                                        📊 已搭建的中转节点列表                                          "
+    echo "                                     📊 已搭建的中转节点列表                                              "
     echo "=========================================================================================="
     DIRS=$(ls -d /opt/relay-* 2>/dev/null || true)
     if [ -z "$DIRS" ]; then
