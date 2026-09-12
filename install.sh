@@ -2,7 +2,7 @@
 set -e
 
 # ================= 引入本地独立配置（防 Git 泄露 + 自动引导） =================
-CONFIG_FILE="/root/yahaidajian.sh"
+CONFIG_FILE="/root/yahai_config.sh"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 else
