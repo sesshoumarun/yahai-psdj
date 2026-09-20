@@ -93,6 +93,80 @@ call_api() {
     curl -sS --max-time 3 "$target_url"
 }
 
+# =========================================================
+# 全球主流及常用国家/地区智能识别与代码映射函数
+# =========================================================
+get_country_code_tag() {
+    local input_str="$1"
+    local lower_str
+    lower_str=$(echo "$input_str" | tr '[:upper:]' '[:lower:]')
+
+    # 如果用户直接输入了标准的2位大写字母（如 US, HK, MY），直接返回大写
+    if [[ "$input_str" =~ ^[a-zA-Z]{2}$ ]]; then
+        echo "$(echo "$input_str" | tr '[:lower:]' '[:upper:]')"
+        return
+    fi
+
+    # 亚太地区 (Asia & Pacific)
+    if [[ "$lower_str" =~ (马来|my|malaysia) ]]; then echo "MY"
+    elif [[ "$lower_str" =~ (香港|hk|hongkong) ]]; then echo "HK"
+    elif [[ "$lower_str" =~ (台湾|tw|taiwan) ]]; then echo "TW"
+    elif [[ "$lower_str" =~ (日本|jp|japan) ]]; then echo "JP"
+    elif [[ "$lower_str" =~ (新加坡|sg|singapore) ]]; then echo "SG"
+    elif [[ "$lower_str" =~ (韩国|kr|korea) ]]; then echo "KR"
+    elif [[ "$lower_str" =~ (泰国|th|thailand) ]]; then echo "TH"
+    elif [[ "$lower_str" =~ (越南|vn|vietnam) ]]; then echo "VN"
+    elif [[ "$lower_str" =~ (菲律宾|ph|philippines) ]]; then echo "PH"
+    elif [[ "$lower_str" =~ (印尼|id|indonesia) ]]; then echo "ID"
+    elif [[ "$lower_str" =~ (印度|in|india) ]]; then echo "IN"
+    elif [[ "$lower_str" =~ (巴基斯坦|pk|pakistan) ]]; then echo "PK"
+    elif [[ "$lower_str" =~ (孟加拉|bd|bangladesh) ]]; then echo "BD"
+    elif [[ "$lower_str" =~ (阿联酋|ae|uae|dubai) ]]; then echo "AE"
+    elif [[ "$lower_str" =~ (土耳其|tr|turkey) ]]; then echo "TR"
+    elif [[ "$lower_str" =~ (以色列|il|israel) ]]; then echo "IL"
+    elif [[ "$lower_str" =~ (沙特|sa|saudi) ]]; then echo "SA"
+
+    # 北美与南美 (North & South America)
+    elif [[ "$lower_str" =~ (美国|us|usa|america) ]]; then echo "US"
+    elif [[ "$lower_str" =~ (加拿大|ca|canada) ]]; then echo "CA"
+    elif [[ "$lower_str" =~ (墨西哥|mx|mexico) ]]; then echo "MX"
+    elif [[ "$lower_str" =~ (巴西|br|brazil) ]]; then echo "BR"
+    elif [[ "$lower_str" =~ (阿根廷|ar|argentina) ]]; then echo "AR"
+    elif [[ "$lower_str" =~ (智利|cl|chile) ]]; then echo "CL"
+
+    # 欧洲 (Europe)
+    elif [[ "$lower_str" =~ (英国|gb|uk|britain|england) ]]; then echo "GB"
+    elif [[ "$lower_str" =~ (德国|de|germany) ]]; then echo "DE"
+    elif [[ "$lower_str" =~ (法国|fr|france) ]]; then echo "FR"
+    elif [[ "$lower_str" =~ (荷兰|nl|netherlands) ]]; then echo "NL"
+    elif [[ "$lower_str" =~ (俄罗斯|ru|russia) ]]; then echo "RU"
+    elif [[ "$lower_str" =~ (瑞士|ch|switzerland) ]]; then echo "CH"
+    elif [[ "$lower_str" =~ (意大利|it|italy) ]]; then echo "IT"
+    elif [[ "$lower_str" =~ (西班牙|es|spain) ]]; then echo "ES"
+    elif [[ "$lower_str" =~ (瑞典|se|sweden) ]]; then echo "SE"
+    elif [[ "$lower_str" =~ (挪威|no|norway) ]]; then echo "NO"
+    elif [[ "$lower_str" =~ (芬兰|fi|finland) ]]; then echo "FI"
+    elif [[ "$lower_str" =~ (波兰|pl|poland) ]]; then echo "PL"
+    elif [[ "$lower_str" =~ (爱尔兰|ie|ireland) ]]; then echo "IE"
+    elif [[ "$lower_str" =~ (奥地利|at|austria) ]]; then echo "AT"
+    elif [[ "$lower_str" =~ (比利时|be|belgium) ]]; then echo "BE"
+    elif [[ "$lower_str" =~ (乌克兰|ua|ukraine) ]]; then echo "UA"
+    elif [[ "$lower_str" =~ (罗马尼亚|ro|romania) ]]; then echo "RO"
+    elif [[ "$lower_str" =~ (捷克|cz|czech) ]]; then echo "CZ"
+    elif [[ "$lower_str" =~ (匈牙利|hu|hungary) ]]; then echo "HU"
+    elif [[ "$lower_str" =~ (葡萄牙|pt|portugal) ]]; then echo "PT"
+    elif [[ "$lower_str" =~ (希腊|gr|greece) ]]; then echo "GR"
+    elif [[ "$lower_str" =~ (丹麦|dk|denmark) ]]; then echo "DK"
+
+    # 大洋洲 (Oceania)
+    elif [[ "$lower_str" =~ (澳大利亚|au|australia) ]]; then echo "AU"
+    elif [[ "$lower_str" =~ (新西兰|nz|zealand) ]]; then echo "NZ"
+    
+    else
+        echo ""
+    fi
+}
+
 get_server_ip() {
     curl -sS --max-time 5 https://api.ipify.org || echo "127.0.0.1"
 }
@@ -293,6 +367,14 @@ direct_create_node() {
     echo -e "\n--- 新建 VLESS-REALITY 直连节点 ---"
     read -p "1. 请输入节点别名前缀 (例如 美国807-): " user_remark
     [ -z "$user_remark" ] && user_remark="节点-"
+    # 智能识别国家代码并规范化
+    cc_tag=$(get_country_code_tag "$user_remark")
+    if [ -n "$cc_tag" ]; then
+        # 如果识别出了国家代码（如MY），且用户没手动带中括号，自动规整为 别名[CC] 格式或 别名-CC
+        remark="${user_remark}[${cc_tag}]-${port}"
+    else
+        remark="${user_remark}${port}"
+    fi
     read -p "2. 请输入对应的伪装域名或 IP (例如 us1.5898519.xyz): " server_address
     [ -z "$server_address" ] && server_address="us.5898519.xyz"
 
@@ -484,6 +566,13 @@ relay_create_node() {
     echo -e "\n--- 新建中转节点 ---"
     read -p "1. 请输入节点别名前缀 (例如 马来西亚住宅 / 日本 01): " user_alias_prefix
     [ -z "$user_alias_prefix" ] && user_alias_prefix="中转"
+    # 智能识别国家代码
+    cc_tag=$(get_country_code_tag "$user_alias_prefix")
+    if [ -n "$cc_tag" ]; then
+        NODE_ALIAS="${user_alias_prefix}[${cc_tag}]-${XRAY_PORT}"
+    else
+        NODE_ALIAS="${user_alias_prefix}-${XRAY_PORT}"
+    fi
     read -p "2. 请输入你的伪装域名/服务器IP (例如 us1.5898519.xyz): " NODE_DOMAIN
     [ -z "$NODE_DOMAIN" ] && NODE_DOMAIN="$(curl -sS --max-time 5 https://api.ipify.org || echo "127.0.0.1")"
 
