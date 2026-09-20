@@ -196,12 +196,9 @@ view_port_pool() {
     echo "=========================================="
 }
 
-# =========================================================
-# 新增：查看云端节点大盘详情功能
-# =========================================================
 view_cloud_node_dashboard() {
     echo -e "\n=========================================================================="
-    echo "                          📊 云端节点大盘详情                               "
+    echo "                        📊 云端节点大盘详情                               "
     echo "=========================================================================="
     local res
     res=$(call_api "node_list" || echo "")
@@ -248,7 +245,7 @@ get_node_key() {
 # =========================================================
 direct_list_nodes() {
     echo -e "\n=========================================================================="
-    echo "                          📊 已搭建的直连节点列表                          "
+    echo "                        📊 已搭建的直连节点列表                          "
     echo "=========================================================================="
     shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
 
@@ -365,6 +362,48 @@ with open("'"$SPECIFIC_CONFIG"'", "w") as f: json.dump(config, f, indent=2)
     echo "✅ 直连节点部署成功！端口 ${port} 已同步至远程防撞池与云端大盘。链接: $VLESS_LINK"
 }
 
+# ================= 新增：修改直连节点名字 =================
+direct_rename_node() {
+    if direct_select_node; then
+        echo -e "\n------------------------------------------"
+        echo "当前直连节点原别名: [${SELECTED_D_ALIAS}]"
+        read -p "请输入新的节点名称/别名: " new_name
+        [ -z "$new_name" ] && { echo "❌ 名字不能为空。"; return; }
+
+        # 读取原文件中的 VLESS 链接
+        old_link=$(cat "$SELECTED_D_FILE" 2>/dev/null)
+        [ -z "$old_link" ] && { echo "❌ 读取原节点链接失败。"; return; }
+
+        # 替换链接末尾的 # 别名
+        base_link="${old_link%%#*}"
+        python3 - <<PY
+import urllib.parse
+old_l = """$base_link"""
+new_alias = """$new_name"""
+encoded_alias = urllib.parse.quote(new_alias, safe='')
+final_link = f"{old_l}#{encoded_alias}"
+with open("""$SELECTED_D_FILE""", "w", encoding="utf-8") as f:
+    f.write(final_link + "\n")
+print(final_link)
+PY
+        new_link=$(cat "$SELECTED_D_FILE")
+
+        # 重新生成二维码
+        rm -f "${SELECTED_D_FILE%.txt}.png"
+        qrencode -o "${EXPORT_DIR}/node_${new_name}.png" "$new_link" 2>/dev/null || true
+
+        # 重命名本地存储的 txt 文件
+        new_txt_file="${EXPORT_DIR}/node_${new_name}.txt"
+        if [ "$SELECTED_D_FILE" != "$new_txt_file" ]; then
+            mv "$SELECTED_D_FILE" "$new_txt_file"
+        fi
+
+        # 同步更新到云端大盘
+        sync_node_to_cloud "$SELECTED_D_PORT" "$new_name" "$new_link"
+        echo "✅ 直连节点名字修改成功！云端大盘已自动更新。"
+    fi
+}
+
 direct_stop_node() {
     if direct_select_node; then
         pkill -f "xray.*config_${SELECTED_D_PORT}.json" 2>/dev/null || true
@@ -399,7 +438,7 @@ direct_delete_node() {
 # =========================================================
 relay_list_nodes() {
     echo -e "\n=========================================================================================="
-    echo "                                       📊 已搭建的中转节点列表                                    "
+    echo "                                        📊 已搭建的中转节点列表                                          "
     echo "=========================================================================================="
     DIRS=$(ls -d /opt/relay-* 2>/dev/null || true)
     if [ -z "$DIRS" ]; then
@@ -577,6 +616,49 @@ PY
     echo "=========================================="
 }
 
+# ================= 新增：修改中转节点名字 =================
+relay_rename_node() {
+    if relay_select_node; then
+        echo -e "\n------------------------------------------"
+        echo "当前中转节点原别名: [${SELECTED_R_ALIAS}]"
+        read -p "请输入新的节点名称/别名: " new_name
+        [ -z "$new_name" ] && { echo "❌ 名字不能为空。"; return; }
+
+        env_file="${SELECTED_R_DIR}/server.env"
+        [ ! -f "$env_file" ] && { echo "❌ 找不到环境变量文件。"; return; }
+        source "$env_file"
+
+        old_link_file="/root/${SELECTED_R_ALIAS}-link.txt"
+        old_qr_file="/root/${SELECTED_R_ALIAS}-QR.png"
+
+        # 更新环境变量中的名字
+        sed -i "s/^NODE_ALIAS=.*/NODE_ALIAS=\"${new_name}\"/" "$env_file"
+
+        # 重新生成链接文件与二维码
+        new_link_file="/root/${new_name}-link.txt"
+        new_qr_file="/root/${new_name}-QR.png"
+
+        python3 - <<PY
+import urllib.parse
+params = "encryption=none&security=reality&sni=${DEST_DOMAIN}&fp=chrome&pbk=${XRAY_PUBLIC}&sid=${XRAY_SHORT_ID}&type=tcp&headerType=none"
+alias = urllib.parse.quote("""${new_name}""", safe='')
+link = f"vless://${XRAY_UUID}@${NODE_DOMAIN}:${XRAY_PORT}?{params}#{alias}"
+with open("""$new_link_file""", "w", encoding="utf-8") as f:
+    f.write(link + "\n")
+print(link)
+PY
+        new_link=$(cat "$new_link_file")
+
+        # 重新生成二维码并清理旧文件
+        qrencode -o "$new_qr_file" -s 10 "$new_link" 2>/dev/null || true
+        rm -f "$old_link_file" "$old_qr_file"
+
+        # 同步更新到云端大盘
+        sync_node_to_cloud "$XRAY_PORT" "$new_name" "$new_link"
+        echo "✅ 中转节点名字修改成功！云端大盘已自动更新。"
+    fi
+}
+
 relay_modify_node_config() {
     if relay_select_node; then
         ENV_FILE="${SELECTED_R_DIR}/server.env"
@@ -686,18 +768,20 @@ direct_menu() {
         echo "=========================================="
         echo "1. 查看直连节点列表"
         echo "2. 新建直连节点"
-        echo "3. 暂停直连节点"
-        echo "4. 恢复直连节点"
-        echo "5. 销毁直连节点"
+        echo "3. 修改直连节点名字"
+        echo "4. 暂停直连节点"
+        echo "5. 恢复直连节点"
+        echo "6. 销毁直连节点"
         echo "0. 返回主菜单"
         echo "=========================================="
         read -p "选择操作: " c
         case "$c" in
             1) direct_list_nodes; pause ;;
             2) direct_create_node; pause ;;
-            3) direct_stop_node; pause ;;
-            4) direct_start_node; pause ;;
-            5) direct_delete_node; pause ;;
+            3) direct_rename_node; pause ;;
+            4) direct_stop_node; pause ;;
+            5) direct_start_node; pause ;;
+            6) direct_delete_node; pause ;;
             0) break ;;
         esac
     done
@@ -711,22 +795,24 @@ relay_menu() {
         echo "=========================================="
         echo "1. 查看中转节点列表"
         echo "2. 新建中转节点"
-        echo "3. 修改中转节点配置 (UUID / 端口)"
-        echo "4. 暂停中转节点"
-        echo "5. 恢复中转节点"
-        echo "6. 销毁中转节点"
-        echo "7. 查看中转节点链接"
+        echo "3. 修改中转节点名字"
+        echo "4. 修改中转节点配置 (UUID / 端口)"
+        echo "5. 暂停中转节点"
+        echo "6. 恢复中转节点"
+        echo "7. 销毁中转节点"
+        echo "8. 查看中转节点链接"
         echo "0. 返回主菜单"
         echo "=========================================="
         read -p "选择操作: " c
         case "$c" in
             1) relay_list_nodes; pause ;;
             2) relay_create_node; pause ;;
-            3) relay_modify_node_config; pause ;;
-            4) relay_stop_node; pause ;;
-            5) relay_start_node; pause ;;
-            6) relay_destroy_node; pause ;;
-            7) relay_view_link; pause ;;
+            3) relay_rename_node; pause ;;
+            4) relay_modify_node_config; pause ;;
+            5) relay_stop_node; pause ;;
+            6) relay_start_node; pause ;;
+            7) relay_destroy_node; pause ;;
+            8) relay_view_link; pause ;;
             0) break ;;
         esac
     done
