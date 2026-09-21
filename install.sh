@@ -380,16 +380,9 @@ direct_create_node() {
         fi
     done
 
+# 保留后台识别（cc_tag 依然有值供你调用），但别名生成直接用你输入的前缀 + 端口
     cc_tag=$(get_country_code_tag "$user_remark")
-    if [ -n "$cc_tag" ]; then
-        if [[ "$user_remark" =~ \[.*\] ]]; then
-            remark="${user_remark}${port}"
-        else
-            remark="${user_remark}[${cc_tag}]-${port}"
-        fi
-    else
-        remark="${user_remark}${port}"
-    fi
+    remark="${user_remark}${port}"
 
     if [ ! -f "/usr/local/bin/xray" ]; then
         echo "正在下载 Xray 核心..."
@@ -591,16 +584,9 @@ relay_create_node() {
         fi
     done
 
+# 同样保留后台识别，别名生成直接采用你的前缀 + 端口
     cc_tag=$(get_country_code_tag "$user_alias_prefix")
-    if [ -n "$cc_tag" ]; then
-        if [[ "$user_alias_prefix" =~ \[.*\] ]]; then
-            NODE_ALIAS="${user_alias_prefix}${XRAY_PORT}"
-        else
-            NODE_ALIAS="${user_alias_prefix}[${cc_tag}]-${XRAY_PORT}"
-        fi
-    else
-        NODE_ALIAS="${user_alias_prefix}-${XRAY_PORT}"
-    fi
+    NODE_ALIAS="${user_alias_prefix}${XRAY_PORT}"
 
     LOCAL_SOCKS_PORT=$((XRAY_PORT + 1000))
     while check_port_used "$LOCAL_SOCKS_PORT"; do
