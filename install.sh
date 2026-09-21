@@ -364,17 +364,9 @@ direct_select_node() {
 }
 
 direct_create_node() {
-    echo -e "\n--- 新建 VLESS-REALITY 直连节点 ---"
-    read -p "1. 请输入节点别名前缀 (例如 美国807-): " user_remark
+read -p "1. 请输入节点别名前缀 (例如 美国807-): " user_remark
     [ -z "$user_remark" ] && user_remark="节点-"
-    # 智能识别国家代码并规范化
-    cc_tag=$(get_country_code_tag "$user_remark")
-    if [ -n "$cc_tag" ]; then
-        # 如果识别出了国家代码（如MY），且用户没手动带中括号，自动规整为 别名[CC] 格式或 别名-CC
-        remark="${user_remark}[${cc_tag}]-${port}"
-    else
-        remark="${user_remark}${port}"
-    fi
+
     read -p "2. 请输入对应的伪装域名或 IP (例如 us1.5898519.xyz): " server_address
     [ -z "$server_address" ] && server_address="us.5898519.xyz"
 
@@ -395,6 +387,21 @@ direct_create_node() {
                 break
             fi
         fi
+    done
+
+    # ✅ 核心修复：等端口确定后，再进行国家代码识别与最终名字拼接
+    cc_tag=$(get_country_code_tag "$user_remark")
+    if [ -n "$cc_tag" ]; then
+        # 如果用户输入里没有写中括号，自动帮你把国家代码和端口补齐
+        # 比如你输入 07-20-美国US- 或 07-20-美国，会自动规范化
+        if [[ "$user_remark" =~ \[.*\] ]]; then
+            remark="${user_remark}${port}"
+        else
+            remark="${user_remark}[${cc_tag}]-${port}"
+        fi
+    else
+        remark="${user_remark}${port}"
+    fi
     done
 
     remark="${user_remark}${port}"
