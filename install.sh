@@ -50,7 +50,6 @@ install_dependencies() {
     echo "        🔍 正在检查本地运行环境..."
     echo "=========================================="
     
-    # 💡 在这里加上 unzip
     for tool in python3 qrencode curl jq unzip; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             echo "📦 检测到缺失工具 [$tool]，正在自动安装..."
@@ -102,13 +101,11 @@ get_country_code_tag() {
     local lower_str
     lower_str=$(echo "$input_str" | tr '[:upper:]' '[:lower:]')
 
-    # 如果用户直接输入了标准的2位大写字母（如 US, HK, MY），直接返回大写
     if [[ "$input_str" =~ ^[a-zA-Z]{2}$ ]]; then
         echo "$(echo "$input_str" | tr '[:lower:]' '[:upper:]')"
         return
     fi
 
-    # 亚太地区 (Asia & Pacific)
     if [[ "$lower_str" =~ (马来|my|malaysia) ]]; then echo "MY"
     elif [[ "$lower_str" =~ (香港|hk|hongkong) ]]; then echo "HK"
     elif [[ "$lower_str" =~ (台湾|tw|taiwan) ]]; then echo "TW"
@@ -126,16 +123,12 @@ get_country_code_tag() {
     elif [[ "$lower_str" =~ (土耳其|tr|turkey) ]]; then echo "TR"
     elif [[ "$lower_str" =~ (以色列|il|israel) ]]; then echo "IL"
     elif [[ "$lower_str" =~ (沙特|sa|saudi) ]]; then echo "SA"
-
-    # 北美与南美 (North & South America)
     elif [[ "$lower_str" =~ (美国|us|usa|america) ]]; then echo "US"
     elif [[ "$lower_str" =~ (加拿大|ca|canada) ]]; then echo "CA"
     elif [[ "$lower_str" =~ (墨西哥|mx|mexico) ]]; then echo "MX"
     elif [[ "$lower_str" =~ (巴西|br|brazil) ]]; then echo "BR"
     elif [[ "$lower_str" =~ (阿根廷|ar|argentina) ]]; then echo "AR"
     elif [[ "$lower_str" =~ (智利|cl|chile) ]]; then echo "CL"
-
-    # 欧洲 (Europe)
     elif [[ "$lower_str" =~ (英国|gb|uk|britain|england) ]]; then echo "GB"
     elif [[ "$lower_str" =~ (德国|de|germany) ]]; then echo "DE"
     elif [[ "$lower_str" =~ (法国|fr|france) ]]; then echo "FR"
@@ -158,11 +151,8 @@ get_country_code_tag() {
     elif [[ "$lower_str" =~ (葡萄牙|pt|portugal) ]]; then echo "PT"
     elif [[ "$lower_str" =~ (希腊|gr|greece) ]]; then echo "GR"
     elif [[ "$lower_str" =~ (丹麦|dk|denmark) ]]; then echo "DK"
-
-    # 大洋洲 (Oceania)
     elif [[ "$lower_str" =~ (澳大利亚|au|australia) ]]; then echo "AU"
     elif [[ "$lower_str" =~ (新西兰|nz|zealand) ]]; then echo "NZ"
-    
     else
         echo ""
     fi
@@ -390,7 +380,6 @@ direct_create_node() {
         fi
     done
 
-    # 规范化处理名称与端口拼接
     cc_tag=$(get_country_code_tag "$user_remark")
     if [ -n "$cc_tag" ]; then
         if [[ "$user_remark" =~ \[.*\] ]]; then
@@ -448,7 +437,6 @@ with open("'"$SPECIFIC_CONFIG"'", "w") as f: json.dump(config, f, indent=2)
     echo "✅ 直连节点部署成功！端口 ${port} 已同步至远程防撞池与云端大盘。链接: $VLESS_LINK"
 }
 
-# ================= 新增：修改直连节点名字 =================
 direct_rename_node() {
     if direct_select_node; then
         echo -e "\n------------------------------------------"
@@ -456,11 +444,9 @@ direct_rename_node() {
         read -p "请输入新的节点名称/别名: " new_name
         [ -z "$new_name" ] && { echo "❌ 名字不能为空。"; return; }
 
-        # 读取原文件中的 VLESS 链接
         old_link=$(cat "$SELECTED_D_FILE" 2>/dev/null)
         [ -z "$old_link" ] && { echo "❌ 读取原节点链接失败。"; return; }
 
-        # 替换链接末尾的 # 别名
         base_link="${old_link%%#*}"
         python3 - <<PY
 import urllib.parse
@@ -474,17 +460,14 @@ print(final_link)
 PY
         new_link=$(cat "$SELECTED_D_FILE")
 
-        # 重新生成二维码
         rm -f "${SELECTED_D_FILE%.txt}.png"
         qrencode -o "${EXPORT_DIR}/node_${new_name}.png" "$new_link" 2>/dev/null || true
 
-        # 重命名本地存储的 txt 文件
         new_txt_file="${EXPORT_DIR}/node_${new_name}.txt"
         if [ "$SELECTED_D_FILE" != "$new_txt_file" ]; then
             mv "$SELECTED_D_FILE" "$new_txt_file"
         fi
 
-        # 同步更新到云端大盘
         sync_node_to_cloud "$SELECTED_D_PORT" "$new_name" "$new_link"
         echo "✅ 直连节点名字修改成功！云端大盘已自动更新。"
     fi
@@ -570,15 +553,9 @@ relay_create_node() {
     echo -e "\n--- 新建中转节点 ---"
     read -p "1. 请输入节点别名前缀 (例如 马来西亚住宅 / 日本 01): " user_alias_prefix
     [ -z "$user_alias_prefix" ] && user_alias_prefix="中转"
-    # 智能识别国家代码
-    cc_tag=$(get_country_code_tag "$user_alias_prefix")
-    if [ -n "$cc_tag" ]; then
-        NODE_ALIAS="${user_alias_prefix}[${cc_tag}]-${XRAY_PORT}"
-    else
-        NODE_ALIAS="${user_alias_prefix}-${XRAY_PORT}"
-    fi
+
     read -p "2. 请输入你的伪装域名/服务器IP (例如 us1.5898519.xyz): " NODE_DOMAIN
-    [ -z "$NODE_DOMAIN" ] && NODE_DOMAIN="$(curl -sS --max-time 5 https://api.ipify.org || echo "127.0.0.1")"
+    [ -z "$NODE_DOMAIN" ] && NODE_DOMAIN="$(get_server_ip)"
 
     echo -e "\n3. 请输入出口中转(上游)信息"
     echo "👉 支持一键粘贴格式: IP:端口:账号:密码 (例如 103.116.47.189:9270:user:pass)"
@@ -614,7 +591,17 @@ relay_create_node() {
         fi
     done
 
-    NODE_ALIAS="${user_alias_prefix}-${XRAY_PORT}"
+    cc_tag=$(get_country_code_tag "$user_alias_prefix")
+    if [ -n "$cc_tag" ]; then
+        if [[ "$user_alias_prefix" =~ \[.*\] ]]; then
+            NODE_ALIAS="${user_alias_prefix}${XRAY_PORT}"
+        else
+            NODE_ALIAS="${user_alias_prefix}[${cc_tag}]-${XRAY_PORT}"
+        fi
+    else
+        NODE_ALIAS="${user_alias_prefix}-${XRAY_PORT}"
+    fi
+
     LOCAL_SOCKS_PORT=$((XRAY_PORT + 1000))
     while check_port_used "$LOCAL_SOCKS_PORT"; do
         LOCAL_SOCKS_PORT=$((RANDOM % 40001 + 20000))
@@ -709,7 +696,6 @@ PY
     echo "=========================================="
 }
 
-# ================= 新增：修改中转节点名字 =================
 relay_rename_node() {
     if relay_select_node; then
         echo -e "\n------------------------------------------"
@@ -724,10 +710,8 @@ relay_rename_node() {
         old_link_file="/root/${SELECTED_R_ALIAS}-link.txt"
         old_qr_file="/root/${SELECTED_R_ALIAS}-QR.png"
 
-        # 更新环境变量中的名字
         sed -i "s/^NODE_ALIAS=.*/NODE_ALIAS=\"${new_name}\"/" "$env_file"
 
-        # 重新生成链接文件与二维码
         new_link_file="/root/${new_name}-link.txt"
         new_qr_file="/root/${new_name}-QR.png"
 
@@ -742,11 +726,9 @@ print(link)
 PY
         new_link=$(cat "$new_link_file")
 
-        # 重新生成二维码并清理旧文件
         qrencode -o "$new_qr_file" -s 10 "$new_link" 2>/dev/null || true
         rm -f "$old_link_file" "$old_qr_file"
 
-        # 同步更新到云端大盘
         sync_node_to_cloud "$XRAY_PORT" "$new_name" "$new_link"
         echo "✅ 中转节点名字修改成功！云端大盘已自动更新。"
     fi
