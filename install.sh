@@ -50,7 +50,8 @@ install_dependencies() {
     echo "        🔍 正在检查本地运行环境..."
     echo "=========================================="
     
-    for tool in python3 qrencode curl jq; do
+    # 💡 在这里加上 unzip
+    for tool in python3 qrencode curl jq unzip; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             echo "📦 检测到缺失工具 [$tool]，正在自动安装..."
             apt-get update -y && apt-get install -y "$tool" || yum install -y "$tool"
