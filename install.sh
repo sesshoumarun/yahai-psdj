@@ -79,7 +79,7 @@ pause() {
 }
 
 # =========================================================
-# 云端 API 核心交互函数 (统一适配 GET 方式与 URL 传参)
+# 云端 API 核心交互函数 (已增强：支持自动重试与容错)
 # =========================================================
 call_api() {
     local action="$1"
@@ -88,9 +88,24 @@ call_api() {
     local target_url="${API_URL}?token=${API_TOKEN}&action=${action}"
     if [ -n "$extra_params" ]; then
         target_url="${target_url}&${extra_params}"
-    fi
+    }
     
-    curl -sS --max-time 3 "$target_url"
+    local response=""
+    local max_retries=3
+    local retry_count=0
+
+    while [ $retry_count -lt $max_retries ]; do
+        response=$(curl -sS --max-time 4 "$target_url" || echo "")
+        if [ -n "$response" ]; then
+            echo "$response"
+            return 0
+        fi
+        retry_count=$((retry_count + 1))
+        sleep 1
+    done
+    
+    echo ""
+    return 1
 }
 
 # =========================================================
@@ -364,11 +379,17 @@ direct_create_node() {
     while true; do
         read -p "3. 请输入监听端口 (留空自动生成 20000-39999 随机可用端口): " port
         if [ -z "$port" ]; then
-            for i in {1..20}; do
+            local attempt=0
+            local max_attempts=50
+            while [ $attempt -lt $max_attempts ]; do
                 candidate=$((RANDOM % 20000 + 20000))
-                if ! check_port_used "$candidate"; then port=$candidate; break; fi
+                if ! check_port_used "$candidate"; then 
+                    port=$candidate
+                    break 
+                fi
+                attempt=$((attempt + 1))
             done
-            [ -z "$port" ] && port=$((RANDOM % 20000 + 20000))
+            [ -z "$port" ] && { echo "❌ 自动分配端口失败：尝试 50 次均未找到空闲端口，请手动指定！"; continue; }
             echo "-> 自动分配可用端口: ${port}"
             break
         else
@@ -380,7 +401,6 @@ direct_create_node() {
         fi
     done
 
-# 保留后台识别（cc_tag 依然有值供你调用），但别名生成直接用你输入的前缀 + 端口
     cc_tag=$(get_country_code_tag "$user_remark")
     remark="${user_remark}${port}"
 
@@ -401,7 +421,7 @@ direct_create_node() {
     DEST_DOMAIN="www.apple.com"
     SPECIFIC_CONFIG="${CONFIG_DIR}/config_${port}.json"
 
-    python3 -c '
+    python3 - <<PY
 import json
 config = {
   "log": {"loglevel": "warning"},
@@ -413,8 +433,8 @@ config = {
   }],
   "outbounds": [{"protocol": "freedom"}]
 }
-with open("'"$SPECIFIC_CONFIG"'", "w") as f: json.dump(config, f, indent=2)
-' 2>/dev/null || true
+with open("'"$SPECIFIC_CONFIG"'", "w", encoding="utf-8") as f: json.dump(config, f, indent=2)
+PY
 
     nohup /usr/local/bin/xray run -config "$SPECIFIC_CONFIG" > /root/xray_${port}.log 2>&1 &
     sleep 2
@@ -568,11 +588,17 @@ relay_create_node() {
     while true; do
         read -p "4. 请输入对外监听端口 (留空自动生成 20000-60000 随机可用端口): " XRAY_PORT
         if [ -z "$XRAY_PORT" ]; then
-            for j in {1..20}; do
+            local attempt=0
+            local max_attempts=50
+            while [ $attempt -lt $max_attempts ]; do
                 candidate=$((RANDOM % 40001 + 20000))
-                if ! check_port_used "$candidate"; then XRAY_PORT=$candidate; break; fi
+                if ! check_port_used "$candidate"; then 
+                    XRAY_PORT=$candidate
+                    break 
+                fi
+                attempt=$((attempt + 1))
             done
-            [ -z "$XRAY_PORT" ] && XRAY_PORT=$((RANDOM % 40001 + 20000))
+            [ -z "$XRAY_PORT" ] && { echo "❌ 自动分配端口失败：尝试 50 次均未找到空闲端口，请手动指定！"; continue; }
             echo "-> 自动分配可用端口: ${XRAY_PORT}"
             break
         else
@@ -584,7 +610,6 @@ relay_create_node() {
         fi
     done
 
-# 同样保留后台识别，别名生成直接采用你的前缀 + 端口
     cc_tag=$(get_country_code_tag "$user_alias_prefix")
     NODE_ALIAS="${user_alias_prefix}${XRAY_PORT}"
 
@@ -595,17 +620,52 @@ relay_create_node() {
 
     NODE_KEY=$(get_node_key "$NODE_ALIAS")
     WORK_DIR="/opt/relay-${NODE_KEY}"
+    
+    # 彻底清理可能存在的残留目录及容器
+    docker rm -f "gost-${NODE_KEY}" "xray-${NODE_KEY}" 2>/dev/null || true
+    rm -rf "${WORK_DIR}"
     mkdir -p "${WORK_DIR}"
 
     echo -e "\n正在开始部署，请稍候..."
     
-    echo "正在测试网络连通性..."
+echo "正在测试网络连通性及地区归属..."
     egress_ip=""
+    country_name=""
     country_code=""
-    test_res=$(docker run --rm --network host -e ALL_PROXY="socks5://${MY_UP_USER}:${MY_UP_PASS}@${MY_UP_HOST}:${MY_UP_PORT}" curlimages/curl:latest curl -s --max-time 6 https://ipapi.co/json 2>/dev/null || echo "")
+
+    # 使用 ipinfo.io（自带 IP、国家、城市等信息，支持通过代理请求）
+    test_res=$(docker run --rm --network host -e ALL_PROXY="socks5://${MY_UP_USER}:${MY_UP_PASS}@${MY_UP_HOST}:${MY_UP_PORT}" curlimages/curl:latest curl -s --max-time 6 https://ipinfo.io/json 2>/dev/null || echo "")
+    
     if [ -n "$test_res" ]; then
-        egress_ip=$(echo "$test_res" | grep -o '"ip":[^,]*' | awk -F'"' '{print $4}')
-        country_code=$(echo "$test_res" | grep -o '"country_code":[^,]*' | awk -F'"' '{print $4}')
+        # 用 python 简洁解析出 ip, country
+        eval $(python3 - <<PY
+import json
+data = """$test_res"""
+try:
+    obj = json.loads(data)
+    print(f"egress_ip='{obj.get('ip', '')}'")
+    print(f"country_code='{obj.get('country', '')}'")
+except:
+    pass
+PY
+)
+    fi
+
+    # 如果 ipinfo 没连上，换备用纯 IP 接口（只保底获取IP）
+    if [ -z "$egress_ip" ]; then
+        egress_ip=$(docker run --rm --network host -e ALL_PROXY="socks5://${MY_UP_USER}:${MY_UP_PASS}@${MY_UP_HOST}:${MY_UP_PORT}" curlimages/curl:latest curl -s --max-time 6 https://api.ipify.org 2>/dev/null || echo "")
+    fi
+
+    # 结果输出展示
+    if [ -n "$egress_ip" ]; then
+        echo "-> 代理出口 IP: ${egress_ip}"
+        if [ -n "$country_code" ]; then
+            echo "-> 归属国家/地区代码: ${country_code}"
+        else
+            echo "-> 归属国家/地区: 检测中（或未返回）"
+        fi
+    else
+        echo "-> ⚠️ 提示：出口网络检测超时，但不影响节点实际转发和使用。"
     fi
 
     XRAY_IMAGE="ghcr.io/xtls/xray-core:26.3.23"
@@ -635,7 +695,6 @@ DEST_DOMAIN=${DEST_DOMAIN}
 EOT
     chmod 600 "${WORK_DIR}/server.env"
 
-    docker rm -f "gost-${NODE_KEY}" 2>/dev/null || true
     docker run -d --name "gost-${NODE_KEY}" --restart unless-stopped --network host gogost/gost:latest -L "socks5://127.0.0.1:${LOCAL_SOCKS_PORT}?udp=true" -F "socks5://${MY_UP_USER}:${MY_UP_PASS}@${MY_UP_HOST}:${MY_UP_PORT}?notls=true&udp=true" >/dev/null
 
     cat <<EOT > "${WORK_DIR}/config.json"
@@ -651,7 +710,6 @@ EOT
 EOT
     chmod 644 "${WORK_DIR}/config.json"
 
-    docker rm -f "xray-${NODE_KEY}" 2>/dev/null || true
     docker run -d --name "xray-${NODE_KEY}" --restart unless-stopped --network host -v "${WORK_DIR}/config.json:/etc/xray/config.json:ro" "$XRAY_IMAGE" run -c /etc/xray/config.json >/dev/null
 
     LINK_FILE="/root/${NODE_ALIAS}-link.txt"
