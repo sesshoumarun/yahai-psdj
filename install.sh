@@ -50,7 +50,7 @@ install_dependencies() {
     echo "        🔍 正在检查本地运行环境..."
     echo "=========================================="
     
-    for tool in python3 qrencode curl jq unzip; do
+    for tool in python3 qrencode curl jq iproute2; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             echo "📦 检测到缺失工具 [$tool]，正在自动安装..."
             apt-get update -y && apt-get install -y "$tool" || yum install -y "$tool"
@@ -306,74 +306,229 @@ get_node_key() {
 }
 
 # =========================================================
-# 新增功能模块：流量监控与带宽限速
+# 查看指定单条节点的流量统计（支持列表序号点选）
 # =========================================================
-view_nodes_traffic() {
+view_single_node_traffic() {
     echo -e "\n=========================================================================="
-    echo "                        📊 各节点实时流量及状态监控大盘                          "
+    echo "                        📊 查看指定单条节点的流量                          "
     echo "=========================================================================="
-    
-    # 1. 检查 Docker 中转节点的网络吞吐
-    if command -v docker >/dev/null 2>&1; then
-        echo "【Docker 中转节点实时网络 I/O】"
-        containers=$(docker ps --format "{{.Names}}" | grep -E '^(xray-|gost-)' || true)
-        if [ -n "$containers" ]; then
-            printf "%-25s | %-15s\n" "容器名称" "累计网卡流量 (Net I/O)"
-            echo "------------------------------------------------------------"
-            for c in $containers; do
-                net_io=$(docker stats --no-stream --format "{{.NetIO}}" "$c" 2>/dev/null || echo "0B / 0B")
-                printf "%-25s | %-15s\n" "$c" "$net_io"
-            done
-        else
-            echo "    (当前暂无运行中的 Docker 中转容器)"
-        fi
-        echo ""
-    fi
+    echo "请选择节点类型："
+    echo " 1. 🌐 直连节点 (VLESS + REALITY)"
+    echo " 2. 🔄 中转节点 (Docker Xray + Gost)"
+    echo " 0. 返回主菜单"
+    read -p "请选择 (0-2): " type_choice
 
-    # 2. 检查直连节点进程及日志体积
-    echo "【直连节点进程及流量日志状态】"
-    shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
-    if [ ${#files[@]} -gt 0 ]; then
-        printf "%-25s | %-8s | %-15s\n" "节点名称" "监听端口" "日志文件大小"
-        echo "------------------------------------------------------------"
+    if [ "$type_choice" -eq 1 ]; then
+        shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
+        if [ ${#files[@]} -eq 0 ]; then
+            echo "当前无直连节点。"
+            return
+        fi
+        i=1
         for file in "${files[@]}"; do
             link=$(cat "$file" 2>/dev/null)
             port=$(echo "$link" | sed -n 's/.*:\([0-9]*\)?.*/\1/p')
             alias_name=$(echo "$link" | awk -F'#' '{print $2}')
             [ -z "$alias_name" ] && alias_name=$(basename "$file" .txt | sed 's/^node_//')
-            log_size="无日志"
-            [ -f "/root/xray_${port}.log" ] && log_size=$(du -sh "/root/xray_${port}.log" | awk '{print $1}')
-            printf "%-25s | %-8s | %-15s\n" "${alias_name}" "${port:-未知}" "${log_size}"
+            echo " [$i] 别名: ${alias_name} | 端口: ${port}"
+            eval "S_NODE_${i}_PORT=\"$port\""; eval "S_NODE_${i}_NAME=\"$alias_name\""
+            i=$((i+1))
         done
-    else
-        echo "    (当前暂无直连节点)"
+        read -p "请输入要查看的节点序号: " s_num
+        target_port=$(eval echo "\$S_NODE_${s_num}_PORT")
+        target_name=$(eval echo "\$S_NODE_${s_num}_NAME")
+        [ -z "$target_port" ] && { echo "❌ 选择无效"; return; }
+
+        echo -e "\n--------------------------------------------------"
+        echo " 📌 节点名称: ${target_name}"
+        echo " 📌 监听端口: ${target_port}"
+        if [ -f "/root/xray_${target_port}.log" ]; then
+            echo " 📄 日志文件大小: $(du -sh /root/xray_${target_port}.log | awk '{print $1}')"
+        else
+            echo " 📄 暂无独立运行日志"
+        fi
+        active_conns=$(ss -antp 2>/dev/null | grep ":${target_port} " | wc -l)
+        echo " 🔗 当前活跃连接数: ${active_conns} 个"
+        echo "--------------------------------------------------"
+
+    elif [ "$type_choice" -eq 2 ]; then
+        DIRS=$(ls -d /opt/relay-* 2>/dev/null || true)
+        if [ -z "$DIRS" ]; then
+            echo "当前无中转节点。"
+            return
+        fi
+        i=1
+        for dir in $DIRS; do
+            if [ -f "$dir/server.env" ]; then
+                alias_name=$(grep "^NODE_ALIAS=" "$dir/server.env" | cut -d'=' -f2 | tr -d '"')
+                xray_port=$(grep "^XRAY_PORT=" "$dir/server.env" | cut -d'=' -f2 | tr -d '"')
+                key=$(basename "$dir" | sed 's/relay-//')
+                echo " [$i] 中转别名: ${alias_name} | 对外端口: ${xray_port}"
+                eval "R_NODE_${i}_KEY=\"$key\""; eval "R_NODE_${i}_NAME=\"$alias_name\""
+                i=$((i+1))
+            fi
+        done
+        read -p "请输入要查看的中转节点序号: " r_num
+        r_key=$(eval echo "\$R_NODE_${r_num}_KEY")
+        r_name=$(eval echo "\$R_NODE_${r_num}_NAME")
+        [ -z "$r_key" ] && { echo "❌ 选择无效"; return; }
+
+        echo -e "\n--------------------------------------------------"
+        echo " 📌 中转节点名称: ${r_name}"
+        echo " 📊 容器实时网卡流量 (Net I/O):"
+        docker stats --no-stream --format "   - 容器: {{.Name}} => 累计收发: {{.NetIO}}" | grep "${r_key}" || echo "   (容器未运行)"
+        echo "--------------------------------------------------"
     fi
-    echo "=========================================================================="
-    echo "💡 提示：如需实现“每条链接精确总流量统计与超额自动关停”，建议结合您的云端后台 API"
-    echo "   定时上报数据，并在超标时自动触发对应的暂停/销毁函数。"
-    echo "=========================================================================="
 }
 
-limit_node_speed() {
-    echo -e "\n--- 🌐 节点瞬时网速限流配置 (基于 TC) ---"
-    read -p "请输入要限速的端口号 (例如直连或中转端口): " target_port
-    if ! [[ "$target_port" =~ ^[0-9]+$ ]]; then
-        echo "❌ 端口号无效。"
-        return
-    fi
-    read -p "请输入限制带宽大小 (例如 1mbit 或 512kbbit): " rate_limit
-    [ -z "$rate_limit" ] && { echo "❌ 未输入带宽限制。"; return; }
+# =========================================================
+# 辅助函数：通过序号勾选节点并返回其监听端口
+# =========================================================
+select_node_port_for_limit() {
+    echo -e "\n请选择要操作的节点类型："
+    echo " 1. 🌐 直连节点"
+    echo " 2. 🔄 中转节点"
+    read -p "请选择 (1-2): " choice_type
 
-    # 获取默认网卡名称
+    target_port=""
+    if [ "$choice_type" -eq 1 ]; then
+        shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
+        if [ ${#files[@]} -eq 0 ]; then
+            echo "❌ 当前无直连节点"
+            return 1
+        fi
+        i=1
+        for file in "${files[@]}"; do
+            link=$(cat "$file" 2>/dev/null)
+            port=$(echo "$link" | sed -n 's/.*:\([0-9]*\)?.*/\1/p')
+            alias_name=$(echo "$link" | awk -F'#' '{print $2}')
+            [ -z "$alias_name" ] && alias_name=$(basename "$file" .txt | sed 's/^node_//')
+            echo " [$i] 别名: ${alias_name} | 端口: ${port}"
+            eval "L_NODE_${i}_PORT=\"$port\""
+            i=$((i+1))
+        done
+        read -p "请输入节点序号: " l_num
+        target_port=$(eval echo "\$L_NODE_${l_num}_PORT")
+    elif [ "$choice_type" -eq 2 ]; then
+        DIRS=$(ls -d /opt/relay-* 2>/dev/null || true)
+        if [ -z "$DIRS" ]; then
+            echo "❌ 当前无中转节点"
+            return 1
+        fi
+        i=1
+        for dir in $DIRS; do
+            if [ -f "$dir/server.env" ]; then
+                alias_name=$(grep "^NODE_ALIAS=" "$dir/server.env" | cut -d'=' -f2 | tr -d '"')
+                xray_port=$(grep "^XRAY_PORT=" "$dir/server.env" | cut -d'=' -f2 | tr -d '"')
+                echo " [$i] 中转别名: ${alias_name} | 对外端口: ${xray_port}"
+                eval "L_RELAY_${i}_PORT=\"$xray_port\""
+                i=$((i+1))
+            fi
+        done
+        read -p "请输入中转节点序号: " r_num
+        target_port=$(eval echo "\$L_RELAY_${r_num}_PORT")
+    fi
+
+    if [ -z "$target_port" ]; then
+        echo "❌ 获取端口失败"
+        return 1
+    fi
+    SELECTED_TARGET_PORT="$target_port"
+    return 0
+}
+
+# =========================================================
+# 永久限速与解除限速管理（完美支持列表点选）
+# =========================================================
+manage_node_speed_limit() {
+    echo -e "\n=========================================="
+    echo "        🚦 节点永久限速与解除限速管理       "
+    echo "=========================================="
+    echo " 1. 列表点选节点进行永久限速 (如限制到 20mbit)"
+    echo " 2. 列表点选节点解除限速"
+    echo " 3. 查看当前所有已生效的限速规则"
+    echo " 0. 返回主菜单"
+    echo "=========================================="
+    read -p "请选择操作 (0-3): " limit_choice
+
     main_interface=$(ip route show default | awk '/default/ {print $5}' | head -n1)
     [ -z "$main_interface" ] && main_interface="eth0"
+    LIMIT_CONF_DIR="/etc/yahai_limits"
+    mkdir -p "$LIMIT_CONF_DIR"
 
-    # 使用 tc 对指定端口进行下行/出口限速
-    tc qdisc add dev "$main_interface" root handle 1: htb default 30 2>/dev/null || true
-    tc class add dev "$main_interface" parent 1: classid 1:1 htb rate "$rate_limit" 2>/dev/null || true
-    tc filter add dev "$main_interface" protocol ip parent 1:0 prio 1 u32 match ip sport "$target_port" 32.flowid 1:1 2>/dev/null || true
+    case "$limit_choice" in
+        1)
+            if ! select_node_port_for_limit; then return; fi
+            target_port="$SELECTED_TARGET_PORT"
 
-    echo "✅ 成功将端口 [${target_port}] 的出口网速限制为 [${rate_limit}]（网卡: $main_interface）！"
+            read -p "请输入限速大小 (例如 20mbit 或 512kbbit): " rate_limit
+            [ -z "$rate_limit" ] && { echo "❌ 未输入速度"; return; }
+
+            # 1. 立即生效
+            tc qdisc add dev "$main_interface" root handle 1: htb default 30 2>/dev/null || true
+            tc class add dev "$main_interface" parent 1: classid 1:1 htb rate "$rate_limit" 2>/dev/null || true
+            tc filter add dev "$main_interface" protocol ip parent 1:0 prio 1 u32 match ip sport "$target_port" 32.flowid 1:1 2>/dev/null || true
+
+            # 2. 写入持久化配置（重启不丢失）
+            echo "$rate_limit" > "${LIMIT_CONF_DIR}/${target_port}.conf"
+            
+            if [ ! -f /etc/rc.local ]; then
+                cat <<EOT > /etc/rc.local
+#!/bin/bash
+exit 0
+EOT
+                chmod +x /etc/rc.local
+            fi
+            if ! grep -q "yahai_restore_limits.sh" /etc/rc.local; then
+                sed -i -e '$i \bash /root/yahai_restore_limits.sh\n' /etc/rc.local
+            fi
+
+            cat << 'EOT' > /root/yahai_restore_limits.sh
+#!/bin/bash
+main_interface=\$(ip route show default | awk '/default/ {print \$5}' | head -n1)
+[ -z "\$main_interface" ] && main_interface="eth0"
+tc qdisc add dev "\$main_interface" root handle 1: htb default 30 2>/dev/null || true
+tc class add dev "\$main_interface" parent 1: classid 1:1 htb rate 1000mbit 2>/dev/null || true
+for conf in /etc/yahai_limits/*.conf; do
+    if [ -f "\$conf" ]; then
+        port=\$(basename "\$conf" .conf)
+        rate=\$(cat "\$conf")
+        tc filter add dev "\$main_interface" protocol ip parent 1:0 prio 1 u32 match ip sport "\$port" 32.flowid 1:1 2>/dev/null || true
+    fi
+done
+EOT
+            chmod +x /root/yahai_restore_limits.sh
+
+            echo "✅ 成功将选中的节点端口 [${target_port}] 永久限速为 [${rate_limit}]！重启自动生效。"
+            ;;
+        2)
+            if ! select_node_port_for_limit; then return; fi
+            target_port="$SELECTED_TARGET_PORT"
+
+            rm -f "${LIMIT_CONF_DIR}/${target_port}.conf"
+            tc filter flush dev "$main_interface" 2>/dev/null || true
+            if [ -f /root/yahai_restore_limits.sh ]; then
+                bash /root/yahai_restore_limits.sh
+            fi
+
+            echo "✅ 已成功解除节点端口 [${target_port}] 的限速限制！"
+            ;;
+        3)
+            echo -e "\n--- 当前已生效的永久限速规则 ---"
+            if [ -d "$LIMIT_CONF_DIR" ] && [ "$(ls -A "$LIMIT_CONF_DIR")" ]; then
+                for conf in "$LIMIT_CONF_DIR"/*.conf; do
+                    p=$(basename "$conf" .conf)
+                    r=$(cat "$conf")
+                    echo " 📌 端口: ${p}  ===>  限制带宽: ${r}"
+                done
+            else
+                echo "    (当前暂无任何限速规则)"
+            fi
+            ;;
+        *)
+            return
+            ;;
+    esac
 }
 
 # =========================================================
@@ -510,7 +665,7 @@ direct_rename_node() {
         old_link=$(cat "$SELECTED_D_FILE" 2>/dev/null)
         [ -z "$old_link" ] && { echo "❌ 读取原节点链接失败。"; return; }
 
-        base_link="${old_link%%#*#}"
+        base_link="${old_link%%#*}"
         python3 - <<PY
 import urllib.parse
 old_l = """$base_link"""
@@ -960,8 +1115,8 @@ main_menu() {
         echo " 3. 🛡️ 批量添加已占用端口到远程防撞池"
         echo " 4. 🛡️ 查看远程全局防撞端口池记录"
         echo " 5. 📊 查看云端节点大盘详情"
-        echo " 6. 📊 查看各节点实时流量监控大盘"
-        echo " 7. 🚦 配置指定端口瞬时网速限流 (TC)"
+        echo " 6. 🔍 查看指定单条节点的流量统计"
+        echo " 7. 🚦 节点永久限速 / 解除限速管理"
         echo " 0. 退出脚本"
         echo "=========================================="
         read -p "请输入选项数字 (0-7): " choice
@@ -971,8 +1126,8 @@ main_menu() {
             3) manual_add_port; pause ;;
             4) view_port_pool; pause ;;
             5) view_cloud_node_dashboard; pause ;;
-            6) view_nodes_traffic; pause ;;
-            7) limit_node_speed; pause ;;
+            6) view_single_node_traffic; pause ;;
+            7) manage_node_speed_limit; pause ;;
             0) echo "已退出管理面板。"; exit 0 ;;
         esac
     done
