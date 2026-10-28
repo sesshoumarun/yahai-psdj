@@ -306,17 +306,11 @@ get_node_key() {
 }
 
 # =========================================================
-# 升级版：利用 iptables 计数器精确统计单条节点的流量
+# 修复版：兼容带单位的 iptables 流量统计解析
 # =========================================================
 get_port_traffic_bytes() {
     local port="$1"
-    # 分别统计该端口作为 sport (出站/下载) 和 dport (入站/上传) 的流量字节数
-    local bytes_out
-    bytes_out=$(iptables -L OUTPUT -v -n 2>/dev/null | grep "spt:$port" | awk '{print $2}' || echo "0")
-    local bytes_in
-    bytes_in=$(iptables -L INPUT -v -n 2>/dev/null | grep "dpt:$port" | awk '{print $2}' || echo "0")
     
-    # 如果 iptables 规则不存在则自动追加一条
     if ! iptables -C INPUT -p tcp --dport "$port" 2>/dev/null; then
         iptables -A INPUT -p tcp --dport "$port" 2>/dev/null || true
     fi
@@ -324,28 +318,45 @@ get_port_traffic_bytes() {
         iptables -A OUTPUT -p tcp --sport "$port" 2>/dev/null || true
     fi
 
-    # 重新读取一次
-    bytes_out=$(iptables -L OUTPUT -v -n 2>/dev/null | grep "spt:$port" | awk '{print $2}' | head -n1 || echo "0")
-    bytes_in=$(iptables -L INPUT -v -n 2>/dev/null | grep "dpt:$port" | awk '{print $2}' | head -n1 || echo "0")
-    
-    [ -z "$bytes_out" ] && bytes_out=0
-    [ -z "$bytes_in" ] && bytes_in=0
+    local raw_out
+    raw_out=$(iptables -L OUTPUT -v -n 2>/dev/null | grep "spt:$port" | awk '{print $2}' | head -n1 || echo "0")
+    local raw_in
+    raw_in=$(iptables -L INPUT -v -n 2>/dev/null | grep "dpt:$port" | awk '{print $2}' | head -n1 || echo "0")
 
-    # 转换单位显示
-    python3 -c "
-out_b = int('$bytes_out')
-in_b = int('$bytes_in')
+    python3 - <<PY
+def parse_size(s):
+    s = str(s).strip().upper()
+    mult = 1
+    if s.endswith('K'):
+        mult = 1024
+        s = s[:-1]
+    elif s.endswith('M'):
+        mult = 1024 * 1024
+        s = s[:-1]
+    elif s.endswith('G'):
+        mult = 1024 * 1024 * 1024
+        s = s[:-1]
+    elif s.endswith('T'):
+        mult = 1024 * 1024 * 1024 * 1024
+        s = s[:-1]
+    try:
+        return float(s) * mult
+    except:
+        return 0.0
+
+out_b = parse_size("$raw_out")
+in_b = parse_size("$raw_in")
 total = out_b + in_b
 
 def format_bytes(size):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size < 1024.0:
-            return f'{size:.2f} {unit}'
+            return f"{size:.2f} {unit}"
         size /= 1024.0
-    return f'{size:.2f} PB'
+    return f"{size:.2f} PB"
 
-print(f'上传: {format_bytes(in_b)} | 下载: {format_bytes(out_b)} | 总计: {format_bytes(total)}')
-"
+print(f"上传: {format_bytes(in_b)} | 下载: {format_bytes(out_b)} | 总计: {format_bytes(total)}")
+PY
 }
 
 view_single_node_traffic() {
@@ -967,7 +978,8 @@ import urllib.parse
 params = "encryption=none&security=reality&sni=${DEST_DOMAIN}&fp=chrome&pbk=${XRAY_PUBLIC}&sid=${XRAY_SHORT_ID}&type=tcp&headerType=none"
 alias = urllib.parse.quote("""${new_name}""", safe='')
 link = f"vless://${XRAY_UUID}@${NODE_DOMAIN}:${XRAY_PORT}?{params}#{alias}"
-with open("""$new_link_file""", "w", encoding="utf-8") as f: f.write(link + "\n")
+with open("""$new_link_file""", "w", encoding="utf-8") as f:
+    f.write(link + "\n")
 print(link)
 PY
         new_link=$(cat "$new_link_file")
