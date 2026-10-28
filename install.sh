@@ -306,7 +306,7 @@ get_node_key() {
 }
 
 # =========================================================
-# 修复版：兼容带单位的 iptables 流量统计解析
+# 流量统计解析模块
 # =========================================================
 get_port_traffic_bytes() {
     local port="$1"
@@ -488,13 +488,13 @@ select_node_port_for_limit() {
 }
 
 # =========================================================
-# 永久限速与解除限速管理
+# 阶梯式永久限速与解除限速管理
 # =========================================================
 manage_node_speed_limit() {
     echo -e "\n=========================================="
-    echo "        🚦 节点永久限速与解除限速管理       "
+    echo "        🚦 阶梯式永久限速与解除限速管理       "
     echo "=========================================="
-    echo " 1. 列表点选节点进行永久限速 (如限制到 20mbit)"
+    echo " 1. 列表点选节点并设置限速 (提供 5M / 10M / 20M 快捷档位)"
     echo " 2. 列表点选节点解除限速"
     echo " 3. 查看当前所有已生效的限速规则"
     echo " 0. 返回主菜单"
@@ -511,8 +511,25 @@ manage_node_speed_limit() {
             if ! select_node_port_for_limit; then return; fi
             target_port="$SELECTED_TARGET_PORT"
 
-            read -p "请输入限速大小 (例如 20mbit 或 512kbbit): " rate_limit
-            [ -z "$rate_limit" ] && { echo "❌ 未输入速度"; return; }
+            echo -e "\n请选择目标限速档位："
+            echo " 1. 🚀 5 Mbps (适合轻量办公/社媒养号)"
+            echo " 2. 🚀 10 Mbps (适合常规跨境操作/网页多开)"
+            echo " 3. 🚀 20 Mbps (适合高清视频/流畅直播/大文件传输)"
+            echo " 4. ⚙️ 自定义输入速度 (例如 50mbit)"
+            read -p "请选择档位 (1-4): " speed_tier
+
+            rate_limit=""
+            case "$speed_tier" in
+                1) rate_limit="5mbit" ;;
+                2) rate_limit="10mbit" ;;
+                3) rate_limit="20mbit" ;;
+                4) 
+                   read -p "请输入自定义限速大小 (例如 15mbit 或 500kbbit): " rate_limit
+                   ;;
+                *) echo "❌ 选择无效"; return ;;
+            esac
+
+            [ -z "$rate_limit" ] && { echo "❌ 未指定速度"; return; }
 
             tc qdisc add dev "$main_interface" root handle 1: htb default 30 2>/dev/null || true
             tc class add dev "$main_interface" parent 1: classid 1:1 htb rate "$rate_limit" 2>/dev/null || true
