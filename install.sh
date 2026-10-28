@@ -306,6 +306,77 @@ get_node_key() {
 }
 
 # =========================================================
+# 新增功能模块：流量监控与带宽限速
+# =========================================================
+view_nodes_traffic() {
+    echo -e "\n=========================================================================="
+    echo "                        📊 各节点实时流量及状态监控大盘                          "
+    echo "=========================================================================="
+    
+    # 1. 检查 Docker 中转节点的网络吞吐
+    if command -v docker >/dev/null 2>&1; then
+        echo "【Docker 中转节点实时网络 I/O】"
+        containers=$(docker ps --format "{{.Names}}" | grep -E '^(xray-|gost-)' || true)
+        if [ -n "$containers" ]; then
+            printf "%-25s | %-15s\n" "容器名称" "累计网卡流量 (Net I/O)"
+            echo "------------------------------------------------------------"
+            for c in $containers; do
+                net_io=$(docker stats --no-stream --format "{{.NetIO}}" "$c" 2>/dev/null || echo "0B / 0B")
+                printf "%-25s | %-15s\n" "$c" "$net_io"
+            done
+        else
+            echo "    (当前暂无运行中的 Docker 中转容器)"
+        fi
+        echo ""
+    fi
+
+    # 2. 检查直连节点进程及日志体积
+    echo "【直连节点进程及流量日志状态】"
+    shopt -s nullglob; files=("${EXPORT_DIR}"/node_*.txt); shopt -u nullglob
+    if [ ${#files[@]} -gt 0 ]; then
+        printf "%-25s | %-8s | %-15s\n" "节点名称" "监听端口" "日志文件大小"
+        echo "------------------------------------------------------------"
+        for file in "${files[@]}"; do
+            link=$(cat "$file" 2>/dev/null)
+            port=$(echo "$link" | sed -n 's/.*:\([0-9]*\)?.*/\1/p')
+            alias_name=$(echo "$link" | awk -F'#' '{print $2}')
+            [ -z "$alias_name" ] && alias_name=$(basename "$file" .txt | sed 's/^node_//')
+            log_size="无日志"
+            [ -f "/root/xray_${port}.log" ] && log_size=$(du -sh "/root/xray_${port}.log" | awk '{print $1}')
+            printf "%-25s | %-8s | %-15s\n" "${alias_name}" "${port:-未知}" "${log_size}"
+        done
+    else
+        echo "    (当前暂无直连节点)"
+    fi
+    echo "=========================================================================="
+    echo "💡 提示：如需实现“每条链接精确总流量统计与超额自动关停”，建议结合您的云端后台 API"
+    echo "   定时上报数据，并在超标时自动触发对应的暂停/销毁函数。"
+    echo "=========================================================================="
+}
+
+limit_node_speed() {
+    echo -e "\n--- 🌐 节点瞬时网速限流配置 (基于 TC) ---"
+    read -p "请输入要限速的端口号 (例如直连或中转端口): " target_port
+    if ! [[ "$target_port" =~ ^[0-9]+$ ]]; then
+        echo "❌ 端口号无效。"
+        return
+    fi
+    read -p "请输入限制带宽大小 (例如 1mbit 或 512kbbit): " rate_limit
+    [ -z "$rate_limit" ] && { echo "❌ 未输入带宽限制。"; return; }
+
+    # 获取默认网卡名称
+    main_interface=$(ip route show default | awk '/default/ {print $5}' | head -n1)
+    [ -z "$main_interface" ] && main_interface="eth0"
+
+    # 使用 tc 对指定端口进行下行/出口限速
+    tc qdisc add dev "$main_interface" root handle 1: htb default 30 2>/dev/null || true
+    tc class add dev "$main_interface" parent 1: classid 1:1 htb rate "$rate_limit" 2>/dev/null || true
+    tc filter add dev "$main_interface" protocol ip parent 1:0 prio 1 u32 match ip sport "$target_port" 32.flowid 1:1 2>/dev/null || true
+
+    echo "✅ 成功将端口 [${target_port}] 的出口网速限制为 [${rate_limit}]（网卡: $main_interface）！"
+}
+
+# =========================================================
 # 模块一：直连节点管理
 # =========================================================
 direct_list_nodes() {
@@ -380,7 +451,6 @@ direct_create_node() {
         fi
     done
 
-# 保留后台识别（cc_tag 依然有值供你调用），但别名生成直接用你输入的前缀 + 端口
     cc_tag=$(get_country_code_tag "$user_remark")
     remark="${user_remark}${port}"
 
@@ -440,7 +510,7 @@ direct_rename_node() {
         old_link=$(cat "$SELECTED_D_FILE" 2>/dev/null)
         [ -z "$old_link" ] && { echo "❌ 读取原节点链接失败。"; return; }
 
-        base_link="${old_link%%#*}"
+        base_link="${old_link%%#*#}"
         python3 - <<PY
 import urllib.parse
 old_l = """$base_link"""
@@ -584,7 +654,6 @@ relay_create_node() {
         fi
     done
 
-# 同样保留后台识别，别名生成直接采用你的前缀 + 端口
     cc_tag=$(get_country_code_tag "$user_alias_prefix")
     NODE_ALIAS="${user_alias_prefix}${XRAY_PORT}"
 
@@ -891,15 +960,19 @@ main_menu() {
         echo " 3. 🛡️ 批量添加已占用端口到远程防撞池"
         echo " 4. 🛡️ 查看远程全局防撞端口池记录"
         echo " 5. 📊 查看云端节点大盘详情"
+        echo " 6. 📊 查看各节点实时流量监控大盘"
+        echo " 7. 🚦 配置指定端口瞬时网速限流 (TC)"
         echo " 0. 退出脚本"
         echo "=========================================="
-        read -p "请输入选项数字 (0-5): " choice
+        read -p "请输入选项数字 (0-7): " choice
         case "$choice" in
             1) direct_menu ;;
             2) relay_menu ;;
             3) manual_add_port; pause ;;
             4) view_port_pool; pause ;;
             5) view_cloud_node_dashboard; pause ;;
+            6) view_nodes_traffic; pause ;;
+            7) limit_node_speed; pause ;;
             0) echo "已退出管理面板。"; exit 0 ;;
         esac
     done
