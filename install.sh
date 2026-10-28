@@ -50,7 +50,7 @@ install_dependencies() {
     echo "        🔍 正在检查本地运行环境..."
     echo "=========================================="
     
-    for tool in python3 qrencode curl jq iproute2; do
+    for tool in python3 qrencode curl jq iproute2 iptables; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             echo "📦 检测到缺失工具 [$tool]，正在自动安装..."
             apt-get update -y && apt-get install -y "$tool" || yum install -y "$tool"
@@ -306,11 +306,51 @@ get_node_key() {
 }
 
 # =========================================================
-# 查看指定单条节点的流量统计（支持列表序号点选）
+# 升级版：利用 iptables 计数器精确统计单条节点的流量
 # =========================================================
+get_port_traffic_bytes() {
+    local port="$1"
+    # 分别统计该端口作为 sport (出站/下载) 和 dport (入站/上传) 的流量字节数
+    local bytes_out
+    bytes_out=$(iptables -L OUTPUT -v -n 2>/dev/null | grep "spt:$port" | awk '{print $2}' || echo "0")
+    local bytes_in
+    bytes_in=$(iptables -L INPUT -v -n 2>/dev/null | grep "dpt:$port" | awk '{print $2}' || echo "0")
+    
+    # 如果 iptables 规则不存在则自动追加一条
+    if ! iptables -C INPUT -p tcp --dport "$port" 2>/dev/null; then
+        iptables -A INPUT -p tcp --dport "$port" 2>/dev/null || true
+    fi
+    if ! iptables -C OUTPUT -p tcp --sport "$port" 2>/dev/null; then
+        iptables -A OUTPUT -p tcp --sport "$port" 2>/dev/null || true
+    fi
+
+    # 重新读取一次
+    bytes_out=$(iptables -L OUTPUT -v -n 2>/dev/null | grep "spt:$port" | awk '{print $2}' | head -n1 || echo "0")
+    bytes_in=$(iptables -L INPUT -v -n 2>/dev/null | grep "dpt:$port" | awk '{print $2}' | head -n1 || echo "0")
+    
+    [ -z "$bytes_out" ] && bytes_out=0
+    [ -z "$bytes_in" ] && bytes_in=0
+
+    # 转换单位显示
+    python3 -c "
+out_b = int('$bytes_out')
+in_b = int('$bytes_in')
+total = out_b + in_b
+
+def format_bytes(size):
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024.0:
+            return f'{size:.2f} {unit}'
+        size /= 1024.0
+    return f'{size:.2f} PB'
+
+print(f'上传: {format_bytes(in_b)} | 下载: {format_bytes(out_b)} | 总计: {format_bytes(total)}')
+"
+}
+
 view_single_node_traffic() {
     echo -e "\n=========================================================================="
-    echo "                        📊 查看指定单条节点的流量                          "
+    echo "                 📊 查看指定单条节点的精确流量统计                          "
     echo "=========================================================================="
     echo "请选择节点类型："
     echo " 1. 🌐 直连节点 (VLESS + REALITY)"
@@ -342,11 +382,8 @@ view_single_node_traffic() {
         echo -e "\n--------------------------------------------------"
         echo " 📌 节点名称: ${target_name}"
         echo " 📌 监听端口: ${target_port}"
-        if [ -f "/root/xray_${target_port}.log" ]; then
-            echo " 📄 日志文件大小: $(du -sh /root/xray_${target_port}.log | awk '{print $1}')"
-        else
-            echo " 📄 暂无独立运行日志"
-        fi
+        echo " 📊 真实流量统计:"
+        get_port_traffic_bytes "$target_port"
         active_conns=$(ss -antp 2>/dev/null | grep ":${target_port} " | wc -l)
         echo " 🔗 当前活跃连接数: ${active_conns} 个"
         echo "--------------------------------------------------"
@@ -362,21 +399,23 @@ view_single_node_traffic() {
             if [ -f "$dir/server.env" ]; then
                 alias_name=$(grep "^NODE_ALIAS=" "$dir/server.env" | cut -d'=' -f2 | tr -d '"')
                 xray_port=$(grep "^XRAY_PORT=" "$dir/server.env" | cut -d'=' -f2 | tr -d '"')
-                key=$(basename "$dir" | sed 's/relay-//')
                 echo " [$i] 中转别名: ${alias_name} | 对外端口: ${xray_port}"
-                eval "R_NODE_${i}_KEY=\"$key\""; eval "R_NODE_${i}_NAME=\"$alias_name\""
+                eval "R_NODE_${i}_PORT=\"$xray_port\""; eval "R_NODE_${i}_NAME=\"$alias_name\""
                 i=$((i+1))
             fi
         done
         read -p "请输入要查看的中转节点序号: " r_num
-        r_key=$(eval echo "\$R_NODE_${r_num}_KEY")
-        r_name=$(eval echo "\$R_NODE_${r_num}_NAME")
-        [ -z "$r_key" ] && { echo "❌ 选择无效"; return; }
+        target_port=$(eval echo "\$R_NODE_${r_num}_PORT")
+        target_name=$(eval echo "\$R_NODE_${r_num}_NAME")
+        [ -z "$target_port" ] && { echo "❌ 选择无效"; return; }
 
         echo -e "\n--------------------------------------------------"
-        echo " 📌 中转节点名称: ${r_name}"
-        echo " 📊 容器实时网卡流量 (Net I/O):"
-        docker stats --no-stream --format "   - 容器: {{.Name}} => 累计收发: {{.NetIO}}" | grep "${r_key}" || echo "   (容器未运行)"
+        echo " 📌 中转节点名称: ${target_name}"
+        echo " 📌 对外监听端口: ${target_port}"
+        echo " 📊 真实流量统计:"
+        get_port_traffic_bytes "$target_port"
+        active_conns=$(ss -antp 2>/dev/null | grep ":${target_port} " | wc -l)
+        echo " 🔗 当前活跃连接数: ${active_conns} 个"
         echo "--------------------------------------------------"
     fi
 }
@@ -438,7 +477,7 @@ select_node_port_for_limit() {
 }
 
 # =========================================================
-# 永久限速与解除限速管理（完美支持列表点选）
+# 永久限速与解除限速管理
 # =========================================================
 manage_node_speed_limit() {
     echo -e "\n=========================================="
@@ -464,12 +503,10 @@ manage_node_speed_limit() {
             read -p "请输入限速大小 (例如 20mbit 或 512kbbit): " rate_limit
             [ -z "$rate_limit" ] && { echo "❌ 未输入速度"; return; }
 
-            # 1. 立即生效
             tc qdisc add dev "$main_interface" root handle 1: htb default 30 2>/dev/null || true
             tc class add dev "$main_interface" parent 1: classid 1:1 htb rate "$rate_limit" 2>/dev/null || true
             tc filter add dev "$main_interface" protocol ip parent 1:0 prio 1 u32 match ip sport "$target_port" 32.flowid 1:1 2>/dev/null || true
 
-            # 2. 写入持久化配置（重启不丢失）
             echo "$rate_limit" > "${LIMIT_CONF_DIR}/${target_port}.conf"
             
             if [ ! -f /etc/rc.local ]; then
@@ -930,8 +967,7 @@ import urllib.parse
 params = "encryption=none&security=reality&sni=${DEST_DOMAIN}&fp=chrome&pbk=${XRAY_PUBLIC}&sid=${XRAY_SHORT_ID}&type=tcp&headerType=none"
 alias = urllib.parse.quote("""${new_name}""", safe='')
 link = f"vless://${XRAY_UUID}@${NODE_DOMAIN}:${XRAY_PORT}?{params}#{alias}"
-with open("""$new_link_file""", "w", encoding="utf-8") as f:
-    f.write(link + "\n")
+with open("""$new_link_file""", "w", encoding="utf-8") as f: f.write(link + "\n")
 print(link)
 PY
         new_link=$(cat "$new_link_file")
@@ -1115,7 +1151,7 @@ main_menu() {
         echo " 3. 🛡️ 批量添加已占用端口到远程防撞池"
         echo " 4. 🛡️ 查看远程全局防撞端口池记录"
         echo " 5. 📊 查看云端节点大盘详情"
-        echo " 6. 🔍 查看指定单条节点的流量统计"
+        echo " 6. 🔍 查看指定单条节点的精确流量统计"
         echo " 7. 🚦 节点永久限速 / 解除限速管理"
         echo " 0. 退出脚本"
         echo "=========================================="
