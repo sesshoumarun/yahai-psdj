@@ -49,15 +49,41 @@ install_dependencies() {
     echo "=========================================="
     echo "        🔍 正在检查本地运行环境..."
     echo "=========================================="
-    
-    for tool in python3 qrencode curl jq iproute2 iptables; do
+
+    # 左侧为可执行命令，右侧为对应的软件包名。
+    # iproute2 是软件包名，实际命令为 ip；不能用 command -v iproute2 检测。
+    local missing_packages=()
+    local item tool package
+    for item in \
+        "python3:python3" \
+        "qrencode:qrencode" \
+        "curl:curl" \
+        "jq:jq" \
+        "ip:iproute2" \
+        "iptables:iptables"; do
+        tool="${item%%:*}"
+        package="${item##*:}"
         if ! command -v "$tool" >/dev/null 2>&1; then
-            echo "📦 检测到缺失工具 [$tool]，正在自动安装..."
-            apt-get update -y && apt-get install -y "$tool" || yum install -y "$tool"
+            echo "📦 检测到缺失工具 [$tool]（软件包：$package）"
+            missing_packages+=("$package")
         else
             echo "✅ 本地环境 [ $tool ] 已就绪"
         fi
     done
+
+    # 只有确实缺包时才刷新软件源；一次安装全部缺失依赖。
+    if [ ${#missing_packages[@]} -gt 0 ]; then
+        echo "📦 正在安装缺失依赖: ${missing_packages[*]}"
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -y
+            apt-get install -y "${missing_packages[@]}"
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y "${missing_packages[@]}"
+        else
+            echo "❌ 未识别的软件包管理器，无法自动安装：${missing_packages[*]}"
+            return 1
+        fi
+    fi
 
     if ! command -v docker >/dev/null 2>&1; then
         echo "🐳 检测到 Docker 未安装，正在自动部署..."
